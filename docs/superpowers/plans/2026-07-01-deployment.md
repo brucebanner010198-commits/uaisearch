@@ -78,6 +78,7 @@ git commit -m "feat: add Dockerfile for the app image"
 **Files:**
 - Create: `docker-compose.yml`
 - Create: `.env.example`
+- Create: `.gitignore`
 
 **Interfaces:**
 - Consumes: `uaisearch-app` image (Task 1).
@@ -95,22 +96,31 @@ services:
       - DISABLE_SECURITY_PLUGIN=true
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"  # security plugin disabled — must never be reachable off-host
     volumes:
       - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200"]
+      interval: 10s
+      retries: 30
+    restart: unless-stopped
 
   app:
     build: .
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
     environment:
       - OPENSEARCH_HOST=opensearch
       - OPENSEARCH_PORT=9200
+      - TARGET_DOMAINS=${TARGET_DOMAINS}
+      - BLOCKED_DOMAINS=${BLOCKED_DOMAINS}
       - LLM_BASE_URL=${LLM_BASE_URL}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"  # public traffic goes through caddy so TLS and X-Forwarded-For rate limiting can't be bypassed
+    restart: unless-stopped
 
 volumes:
   opensearch-data:
@@ -118,6 +128,7 @@ volumes:
 
 ```bash
 # .env.example
+DOMAIN=your-real-domain.example
 LLM_BASE_URL=https://api.anthropic.com/v1
 LLM_API_KEY=changeme
 LLM_MODEL=claude-sonnet-5
@@ -128,7 +139,16 @@ BLOCKED_DOMAINS=
 
 `BLOCKED_DOMAINS` is the operator-maintained legal exclusion list (`is_blocked`, Indexer plan Task 8) — comma-separated domains or exact URLs to exclude, e.g. after a DMCA takedown notice. Empty by default.
 
-Copy it: `cp .env.example .env` and fill in real values before bring-up.
+Create `.gitignore`:
+
+```
+.env
+__pycache__/
+*.egg-info/
+.pytest_cache/
+```
+
+Copy `.env.example` to `.env` and fill in real values before bring-up: `cp .env.example .env`.
 
 - [ ] **Step 2: Bring up and verify**
 
@@ -141,24 +161,28 @@ Expected: JSON banner with OpenSearch version info.
 Run: `curl -s http://localhost:8000/openapi.json | python3 -m json.tool`
 Expected: valid OpenAPI JSON (the app started and can serve requests, even before the index has any data).
 
+Run: From any other machine, `curl http://<host>:9200` fails (refused/timeout).
+Expected: OpenSearch is not accessible from off-host.
+
 - [ ] **Step 3: Commit**
 
 ```bash
-git add docker-compose.yml .env.example
+git add docker-compose.yml .env.example .gitignore
 git commit -m "feat: add core Docker Compose stack (OpenSearch + app)"
 ```
 
 ---
 
-### Task 3: One-time index creation and Common Crawl backfill scripts
+### Task 3: Operational scripts — index creation, Common Crawl backfill, blocklist purge
 
 **Files:**
 - Create: `scripts/create_index.py`
 - Create: `scripts/backfill_common_crawl.py`
+- Create: `scripts/purge_blocked.py`
 
 **Interfaces:**
-- Consumes: `create_index`, `index_page`, `load_simhash_index` (`uaisearch.indexer`, Indexer plan), `get_client` (`uaisearch.opensearch_client`), `iter_wet_records`, `build_page_from_wet` (`uaisearch.common_crawl`, Crawler plan Task 6 and 8).
-- Produces: two standalone scripts run manually during initial bring-up.
+- Consumes: `create_index`, `index_page`, `load_simhash_index` (`uaisearch.indexer`, Indexer plan), `get_client` (`uaisearch.opensearch_client`), `iter_wet_records`, `build_page_from_wet` (`uaisearch.common_crawl`, Crawler plan Task 6 and 8), `purge_blocked` (`uaisearch.indexer`, Indexer plan Task 9).
+- Produces: three standalone scripts run manually during initial bring-up or as operator maintenance tasks.
 
 - [ ] **Step 1: Write the scripts**
 
@@ -187,6 +211,7 @@ if __name__ == "__main__":
 # scripts/backfill_common_crawl.py
 import os
 import sys
+from datetime import date
 
 from uaisearch.common_crawl import build_page_from_wet, iter_wet_records
 from uaisearch.indexer import create_index, index_page, load_simhash_index
@@ -196,7 +221,7 @@ TARGET_DOMAINS = {d for d in os.environ.get("TARGET_DOMAINS", "").split(",") if 
 BLOCKED_DOMAINS = {d for d in os.environ.get("BLOCKED_DOMAINS", "").split(",") if d}
 
 
-def main(s3_key: str) -> None:
+def main(s3_key: str, crawl_date: str) -> None:
     client = get_client(
         host=os.environ.get("OPENSEARCH_HOST", "localhost"),
         port=int(os.environ.get("OPENSEARCH_PORT", "9200")),
@@ -206,13 +231,38 @@ def main(s3_key: str) -> None:
 
     total_chunks = 0
     for url, domain, text in iter_wet_records(s3_key, TARGET_DOMAINS):
-        page = build_page_from_wet(url, domain, text, crawl_date="2026-07-01")
+        page = build_page_from_wet(url, domain, text, crawl_date=crawl_date)
         total_chunks += index_page(client, page, dedup_index, blocklist=BLOCKED_DOMAINS)
     print(f"Backfilled {total_chunks} chunks from {s3_key}.")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    if len(sys.argv) < 2:
+        sys.exit("usage: backfill_common_crawl.py <wet-segment-s3-key> [crawl-date YYYY-MM-DD]")
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else date.today().isoformat())
+```
+
+```python
+# scripts/purge_blocked.py
+import os
+
+from uaisearch.indexer import purge_blocked
+from uaisearch.opensearch_client import get_client
+
+BLOCKED_DOMAINS = {d for d in os.environ.get("BLOCKED_DOMAINS", "").split(",") if d}
+
+
+def main() -> None:
+    client = get_client(
+        host=os.environ.get("OPENSEARCH_HOST", "localhost"),
+        port=int(os.environ.get("OPENSEARCH_PORT", "9200")),
+    )
+    deleted = purge_blocked(client, BLOCKED_DOMAINS)
+    print(f"Purged {deleted} chunks for {len(BLOCKED_DOMAINS)} blocked entries.")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 - [ ] **Step 2: Rebuild the app image and verify**
@@ -224,14 +274,21 @@ Run: `docker compose build app && docker compose up -d app`
 Run: `docker compose exec app python scripts/create_index.py`
 Expected: prints `Index ready.`; `curl -s http://localhost:9200/_cat/indices` shows a `pages` index.
 
-Run (with a real Common Crawl WET segment key, e.g. from a monthly crawl's `wet.paths.gz` listing, and `TARGET_DOMAINS` set in `.env` to your seed domains): `docker compose exec app python scripts/backfill_common_crawl.py "crawl-data/CC-MAIN-.../wet/....warc.wet.gz"`
+Run (with a real Common Crawl WET segment key, e.g. from a monthly crawl's `wet.paths.gz` listing, and `TARGET_DOMAINS` set in `.env` to your seed domains): `docker compose exec app python scripts/backfill_common_crawl.py "crawl-data/CC-MAIN-.../wet/....warc.wet.gz" YYYY-MM-DD`
 Expected: prints `Backfilled N chunks from ...` with N > 0 if any target domains appear in that segment.
+
+Note: env vars now reach `docker compose exec app` because they're in the service `environment:` block (Tasks 2, 4, 6).
+
+Run: `docker compose exec app python scripts/purge_blocked.py`
+Expected: `Purged 0 chunks for 0 blocked entries.` with the default empty list.
+
+**Operator runbook:** To take content down, add the domain/URL to `BLOCKED_DOMAINS` in `.env`, run `docker compose up -d app crawler`, then `docker compose exec app python scripts/purge_blocked.py`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add scripts/create_index.py scripts/backfill_common_crawl.py
-git commit -m "feat: add one-time index creation and Common Crawl backfill scripts"
+git add scripts/create_index.py scripts/backfill_common_crawl.py scripts/purge_blocked.py
+git commit -m "feat: add index creation, backfill, and blocklist purge scripts"
 ```
 
 ---
@@ -279,12 +336,14 @@ async def main() -> None:
             seeds, frontier, http_client,
             max_pages=int(os.environ.get("MAX_PAGES", "50")),
         )
-    seeds.save(FRONTIER_STATE_PATH)
 
     total_chunks = sum(
         index_page(client, page, dedup_index, blocklist=BLOCKED_DOMAINS) for page in pages
     )
     print(f"Crawled {len(pages)} pages, indexed {total_chunks} chunks.")
+    
+    # Save after indexing — a crash mid-index re-fetches this cycle instead of losing those pages forever
+    seeds.save(FRONTIER_STATE_PATH)
 
 
 if __name__ == "__main__":
@@ -296,7 +355,8 @@ if __name__ == "__main__":
   crawler:
     build: .
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
     environment:
       - OPENSEARCH_HOST=opensearch
       - OPENSEARCH_PORT=9200
@@ -306,9 +366,8 @@ if __name__ == "__main__":
       - FRONTIER_STATE_PATH=/data/frontier.json
     volumes:
       - crawler-data:/data
-    # ponytail: shell loop instead of a real cron daemon — swap for cron/a
-    # systemd timer/a Compose-external scheduler if precise timing matters
-    entrypoint: ["sh", "-c", "while true; do python scripts/run_crawler.py; sleep 86400; done"]
+    entrypoint: ["sh", "-c", "while true; do if python scripts/run_crawler.py; then sleep 86400; else echo 'crawler run failed; retrying in 15m'; sleep 900; fi; done"]
+    restart: unless-stopped
 ```
 
 ```yaml
@@ -352,13 +411,16 @@ git commit -m "feat: add scheduled crawler service with persisted frontier state
 ```yaml
 # add to docker-compose.yml, under services:
   local-llm:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.9.6
     profiles: ["local-llm"]
     ports:
       - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+    restart: unless-stopped
 ```
+
+**Note:** Pin to a fixed release tag, never `latest` — bump to the current release at implementation time (github.com/ollama/ollama/releases).
 
 ```yaml
 # add ollama-data to the existing volumes: block in docker-compose.yml
@@ -416,7 +478,10 @@ reverse_proxy app:8000
       - caddy-data:/data
     environment:
       - DOMAIN=${DOMAIN}
+    restart: unless-stopped
 ```
+
+**Note:** `reverse_proxy` sets `X-Forwarded-For` (what the API plan's rate limiter keys on). Host-loopback binding of `app:8000` doesn't affect compose-internal network traffic — Caddy reaches it via the `app` service hostname.
 
 ```yaml
 # add caddy-data to the existing volumes: block in docker-compose.yml
