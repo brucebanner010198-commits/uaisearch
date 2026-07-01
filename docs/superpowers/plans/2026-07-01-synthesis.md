@@ -12,7 +12,7 @@
 
 - `LLMClient` must work against any backend speaking the OpenAI-compatible chat-completions schema — no vendor-specific SDK, no hardcoded provider. Backend selection is `base_url` + `api_key` + `model`, passed in at construction.
 - Only standard, safety-tuned instruct models are in scope. Do not add any option, flag, or code path for safety-stripped ("abliterated") models — this was an explicit, deliberate exclusion from the approved design (see `docs/superpowers/specs/2026-07-01-uncensored-search-engine-design.md`).
-- `verify_citations` is the accuracy safeguard for "fully sourced, accuracy prioritized" — it must run on every generated answer before that answer reaches a user; there is no bypass path.
+- `verify_citations` is the accuracy safeguard for "fully sourced, accuracy prioritized" — it must run on every generated answer before that answer reaches a user; there is no bypass path. Uncited sentences are verified against all retrieved chunks; an LLM that omits citation markers cannot stream unverified claims.
 - Depends on the Indexer plan being implemented first (`embed` in `uaisearch.indexer`, `Chunk`/`Answer` in `uaisearch.models`).
 
 ---
@@ -298,11 +298,13 @@ def test_verify_citations_keeps_supported_sentences_and_drops_unsupported():
     )
     raw_text = (
         "Bees communicate through a waggle dance that encodes direction and distance [1]. "
-        "The moon landing happened in 1969 [1]."
+        "The moon landing happened in 1969 [1]. "
+        "The Eiffel Tower is in Paris."
     )
     answer = verify_citations(raw_text, [chunk])
     assert "waggle dance" in answer.text
     assert "moon landing" not in answer.text
+    assert "Eiffel Tower" not in answer.text
     assert answer.citations == [1]
 ```
 
@@ -341,7 +343,11 @@ def verify_citations(raw_text: str, chunks: list[Chunk], threshold: float = 0.3)
     for sentence in _split_sentences(raw_text):
         cited_indices = [int(m) for m in CITATION_PATTERN.findall(sentence)]
         if not cited_indices:
-            kept_sentences.append(sentence)
+            # A missing [n] marker is not a bypass: keep the sentence only if
+            # some retrieved chunk actually supports it
+            sentence_emb = embed(sentence)
+            if any(cosine(sentence_emb, c.embedding) >= threshold for c in chunks):
+                kept_sentences.append(sentence)
             continue
         supported = False
         for cited_index in cited_indices:
