@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - The ranking formula in `score()` is an explicit allow-list: BM25, cosine similarity, domain quality, ad-ratio penalty, freshness. No advertiser bid, partner deal, manual trust score, or user-identity signal may be added to it.
+- The composite `score()` is not decorative — `rerank()` blends normalized cross-encoder relevance with the normalized composite prior (0.7/0.3), so ad-ratio/domain-quality/freshness always influence the final ranking.
 - Depends on the Indexer plan being implemented first (`INDEX_NAME`, `create_index`, `embed`, `Chunk`, `get_client`).
 
 ---
@@ -216,7 +217,7 @@ git commit -m "feat: add BM25 + kNN candidate fetch from OpenSearch"
 
 ---
 
-### Task 3: Cross-encoder rerank
+### Task 3: Cross-encoder rerank blended with the composite prior
 
 **Files:**
 - Modify: `src/uaisearch/retrieval.py`
@@ -248,9 +249,22 @@ def test_rerank_orders_by_relevance_and_truncates():
     result = rerank(query, [irrelevant, relevant], top_k=1)
     assert len(result) == 1
     assert result[0].url == "a"
+
+
+def test_rerank_blends_composite_prior_so_ad_heavy_loses_ties():
+    query = "how do I start beekeeping"
+    text = "backyard beekeeping hive management for beginners"
+    clean = Chunk(url="clean", title="", domain="clean.example", chunk_text=text,
+                  embedding=[], ad_ratio=0.0, domain_quality=1.0,
+                  crawl_date="2026-07-01", score=1.0)
+    ad_heavy = Chunk(url="ads", title="", domain="ads.example", chunk_text=text,
+                     embedding=[], ad_ratio=0.9, domain_quality=0.1,
+                     crawl_date="2026-07-01", score=0.2)
+    result = rerank(query, [ad_heavy, clean], top_k=2)
+    assert result[0].url == "clean"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_retrieval.py -v -k test_rerank`
 Expected: FAIL with `ImportError: cannot import name 'rerank'`
@@ -275,17 +289,26 @@ def rerank(query: str, candidates: list[Chunk], top_k: int = 8) -> list[Chunk]:
     if not candidates:
         return []
     pairs = [(query, c.chunk_text) for c in candidates]
-    cross_scores = _get_cross_encoder().predict(pairs)
-    for chunk, cross_score in zip(candidates, cross_scores):
-        chunk.score = float(cross_score)
+    cross_scores = [float(s) for s in _get_cross_encoder().predict(pairs)]
+
+    def normalize(values: list[float]) -> list[float]:
+        lo, span = min(values), (max(values) - min(values)) or 1.0
+        return [(v - lo) / span for v in values]
+
+    cross_norms = normalize(cross_scores)
+    prior_norms = normalize([c.score for c in candidates])
+    for chunk, cross_norm, prior_norm in zip(candidates, cross_norms, prior_norms):
+        # ponytail: 0.7/0.3 keeps semantic relevance dominant while the composite
+        # prior (ad ratio, domain quality, freshness) still separates ties
+        chunk.score = 0.7 * cross_norm + 0.3 * prior_norm
     candidates.sort(key=lambda c: c.score, reverse=True)
     return candidates[:top_k]
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_retrieval.py -v -k test_rerank`
-Expected: 1 passed (first run downloads the `cross-encoder/ms-marco-MiniLM-L-6-v2` model — allow extra time)
+Expected: 2 passed (first run downloads the `cross-encoder/ms-marco-MiniLM-L-6-v2` model — allow extra time)
 
 - [ ] **Step 5: Commit**
 
@@ -398,6 +421,26 @@ def test_retrieve_and_rerank_orders_relevant_chunk_first_and_respects_limit():
     results = retrieve_and_rerank(client, "how do I start beekeeping", limit=2)
     assert len(results) <= 2
     assert results[0].domain in {"a.example", "c.example"}
+
+
+def test_retrieve_and_rerank_ranks_clean_source_above_ad_heavy_twin():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+    text = "backyard beekeeping hive management for beginners"
+    for url, domain, ad_ratio, quality, sim in [
+        ("https://clean.example/1", "clean.example", 0.0, 1.0, 1),
+        ("https://ads.example/1", "ads.example", 0.9, 0.1, 2),
+    ]:
+        client.index(index=INDEX_NAME, body={
+            "url": url, "domain": domain, "title": domain,
+            "chunk_text": text, "embedding": embed(text),
+            "ad_ratio": ad_ratio, "domain_quality": quality,
+            "crawl_date": date.today().isoformat(), "simhash": sim,
+        })
+    client.indices.refresh(index=INDEX_NAME)
+    results = retrieve_and_rerank(client, "how do I start beekeeping", limit=2)
+    assert results[0].url == "https://clean.example/1"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -417,10 +460,10 @@ def retrieve_and_rerank(
     return apply_domain_cap(reranked, max_per_domain=2)[:limit]
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_retrieval.py -v -k retrieve_and_rerank`
-Expected: 1 passed
+Expected: 2 passed
 
 - [ ] **Step 5: Run the full test suite**
 
