@@ -1,9 +1,12 @@
 from datetime import date
 
 from opensearchpy import OpenSearch
+from sentence_transformers import CrossEncoder
 
 from uaisearch.indexer import INDEX_NAME, embed
 from uaisearch.models import Chunk
+
+_cross_encoder: CrossEncoder | None = None
 
 
 def freshness_decay(crawl_date: str, half_life_days: int = 180) -> float:
@@ -65,3 +68,30 @@ def fetch_candidates(client: OpenSearch, query: str, limit: int = 30) -> list[Ch
         candidates.append(chunk)
     candidates.sort(key=lambda c: c.score, reverse=True)
     return candidates
+
+
+def _get_cross_encoder() -> CrossEncoder:
+    global _cross_encoder
+    if _cross_encoder is None:
+        _cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    return _cross_encoder
+
+
+def rerank(query: str, candidates: list[Chunk], top_k: int = 8) -> list[Chunk]:
+    if not candidates:
+        return []
+    pairs = [(query, c.chunk_text) for c in candidates]
+    cross_scores = [float(s) for s in _get_cross_encoder().predict(pairs)]
+
+    def normalize(values: list[float]) -> list[float]:
+        lo, span = min(values), (max(values) - min(values)) or 1.0
+        return [(v - lo) / span for v in values]
+
+    cross_norms = normalize(cross_scores)
+    prior_norms = normalize([c.score for c in candidates])
+    for chunk, cross_norm, prior_norm in zip(candidates, cross_norms, prior_norms):
+        # ponytail: 0.7/0.3 keeps semantic relevance dominant while the composite
+        # prior (ad ratio, domain quality, freshness) still separates ties
+        chunk.score = 0.7 * cross_norm + 0.3 * prior_norm
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    return candidates[:top_k]

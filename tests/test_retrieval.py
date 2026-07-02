@@ -41,7 +41,7 @@ def test_score_ad_ratio_penalty_is_isolated_and_correctly_signed():
 
 from uaisearch.indexer import INDEX_NAME, create_index, embed
 from uaisearch.opensearch_client import get_client
-from uaisearch.retrieval import fetch_candidates
+from uaisearch.retrieval import fetch_candidates, rerank
 
 
 def test_fetch_candidates_ranks_relevant_chunk_above_irrelevant():
@@ -65,3 +65,33 @@ def test_fetch_candidates_ranks_relevant_chunk_above_irrelevant():
 
     candidates = fetch_candidates(client, "how do I start beekeeping", limit=10)
     assert candidates[0].url == "https://a.example/1"
+
+
+def test_rerank_orders_by_relevance_and_truncates():
+    query = "how do I start beekeeping"
+    relevant = Chunk(
+        url="a", title="a", domain="a.example",
+        chunk_text="backyard beekeeping hive management for beginners",
+        embedding=[], ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    irrelevant = Chunk(
+        url="b", title="b", domain="b.example",
+        chunk_text="stock market inflation report",
+        embedding=[], ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    result = rerank(query, [irrelevant, relevant], top_k=1)
+    assert len(result) == 1
+    assert result[0].url == "a"
+
+
+def test_rerank_blends_composite_prior_so_ad_heavy_loses_ties():
+    query = "how do I start beekeeping"
+    text = "backyard beekeeping hive management for beginners"
+    clean = Chunk(url="clean", title="", domain="clean.example", chunk_text=text,
+                  embedding=[], ad_ratio=0.0, domain_quality=1.0,
+                  crawl_date="2026-07-01", score=1.0)
+    ad_heavy = Chunk(url="ads", title="", domain="ads.example", chunk_text=text,
+                     embedding=[], ad_ratio=0.9, domain_quality=0.1,
+                     crawl_date="2026-07-01", score=0.2)
+    result = rerank(query, [ad_heavy, clean], top_k=2)
+    assert result[0].url == "clean"
