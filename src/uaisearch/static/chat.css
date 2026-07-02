@@ -1,0 +1,8 @@
+body { font-family: system-ui, sans-serif; max-width: 700px; margin: 2rem auto; }
+#chat-log { display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1rem; }
+.message.user { align-self: flex-end; background: #e6f0ff; padding: 0.5rem 1rem; border-radius: 8px; }
+.message.answer { background: #f4f4f4; padding: 0.5rem 1rem; border-radius: 8px; }
+.sources { font-size: 0.85rem; color: #555; margin-top: 0.5rem; }
+.related-questions button { margin: 0.25rem 0.25rem 0 0; }
+#chat-form { display: flex; gap: 0.5rem; }
+#chat-input { flex: 1; padding: 0.5rem; }

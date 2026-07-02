@@ -2,9 +2,12 @@ import json
 import os
 import time
 from collections import defaultdict
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from opensearchpy import OpenSearch
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -148,3 +151,13 @@ async def answer(
         yield f"data: {json.dumps(final_event)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+_BASE_DIR = Path(__file__).parent
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
+
+
+@app.get("/")
+async def chat_page(request: Request):
+    return templates.TemplateResponse(request, "chat.html", {})
