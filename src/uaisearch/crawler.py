@@ -120,6 +120,8 @@ def strip_ad_elements(html: str) -> tuple[BeautifulSoup, float]:
     soup = BeautifulSoup(html, "lxml")
     ad_ratio = estimate_ad_density(soup)
     for tag in soup.find_all(True):
+        if tag.decomposed:  # ancestor already stripped this subtree
+            continue
         classes = " ".join(tag.get("class", []))
         tag_id = tag.get("id", "")
         src = tag.get("src", "") if tag.name == "iframe" else ""

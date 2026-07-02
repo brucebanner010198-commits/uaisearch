@@ -151,6 +151,34 @@ def test_extract_clean_text_strips_ads_and_returns_title_body():
     assert ad_ratio > 0.0
 
 
+def test_strip_ad_elements_survives_nested_tags_in_ad_containers():
+    # Regression: decompose() on an ad container nulls its subtree's attrs, so
+    # a child tag appearing later in the materialized find_all list crashed
+    # with AttributeError ('NoneType' object has no attribute 'get').
+    html = """
+    <html><head><title>Nested Ad Page</title></head>
+    <body>
+        <div class="advertisement"><img src="ad.png"/></div>
+        <article>
+            <h1>Composting at Home</h1>
+            <p>Composting turns kitchen scraps and yard waste into a rich soil
+            amendment over a few months. A balanced pile needs a mix of green
+            nitrogen-rich material and brown carbon-rich material, regular
+            turning for aeration, and enough moisture to keep the microbes
+            active without waterlogging the pile.</p>
+        </article>
+    </body></html>
+    """
+    soup, ad_ratio = strip_ad_elements(html)  # must not raise
+    assert soup.find("div", class_="advertisement") is None
+    assert soup.find("img") is None
+    assert "Composting" in soup.get_text()
+
+    title, body, _ = extract_clean_text(html, "https://example.com/compost")
+    assert title == "Nested Ad Page"
+    assert "composting" in body.lower()
+
+
 from uaisearch.crawler import extract_links
 
 
