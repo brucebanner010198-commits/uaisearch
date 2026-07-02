@@ -242,3 +242,74 @@ async def test_run_crawl_cycle_fetches_and_extracts_seed_pages():
     assert all(p.domain == "niche-example.com" for p in pages)
     assert all("content" in p.text for p in pages)
     assert all(p.crawl_date == date.today().isoformat() for p in pages)
+
+
+async def test_run_crawl_cycle_skips_dark_web_urls_without_fetching():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nCrawl-delay: 0\n")
+        return httpx.Response(200, text=(
+            "<html><head><title>Seed Page</title></head>"
+            "<body><article><p>" + ("content " * 60) + "</p></article></body></html>"
+        ))
+
+    transport = httpx.MockTransport(handler)
+    seeds = SeedManager(["http://exampleonionaddr.onion/page", "https://niche-example.com/a"])
+    frontier = Frontier(http_client=httpx.Client(transport=transport))
+    async with httpx.AsyncClient(transport=transport) as client:
+        pages = await run_crawl_cycle(seeds, frontier, client, max_pages=1)
+
+    assert len(pages) == 1
+    assert pages[0].domain == "niche-example.com"
+    assert not any(host.endswith(".onion") for host in calls)
+
+
+async def test_run_crawl_cycle_queues_discovered_links():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nCrawl-delay: 0\n")
+        return httpx.Response(200, text=(
+            "<html><head><title>Seed Page</title></head><body><article><p>"
+            + ("content " * 60)
+            + '</p></article><a href="/discovered">More</a></body></html>'
+        ))
+
+    transport = httpx.MockTransport(handler)
+    seeds = SeedManager(["https://niche-example.com/a"])
+    frontier = Frontier(http_client=httpx.Client(transport=transport))
+    async with httpx.AsyncClient(transport=transport) as client:
+        await run_crawl_cycle(seeds, frontier, client, max_pages=1)
+
+    assert seeds.next_url() == "https://niche-example.com/discovered"
+
+
+async def test_run_crawl_cycle_isolates_per_page_extraction_failures(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nCrawl-delay: 0\n")
+        return httpx.Response(200, text=(
+            "<html><head><title>Seed Page</title></head>"
+            "<body><article><p>" + ("content " * 60) + "</p></article></body></html>"
+        ))
+
+    real_build = build_extracted_page
+
+    def flaky_build(html, url, domain, crawl_date):
+        if url == "https://niche-example.com/a":
+            raise ValueError("boom")
+        return real_build(html, url, domain, crawl_date)
+
+    monkeypatch.setattr("uaisearch.crawler.build_extracted_page", flaky_build)
+
+    transport = httpx.MockTransport(handler)
+    seeds = SeedManager(["https://niche-example.com/a", "https://niche-example.com/b"])
+    frontier = Frontier(http_client=httpx.Client(transport=transport))
+    async with httpx.AsyncClient(transport=transport) as client:
+        pages = await run_crawl_cycle(seeds, frontier, client, max_pages=2)
+
+    assert len(pages) == 1
+    assert pages[0].url == "https://niche-example.com/b"
+    assert pages[0].domain == "niche-example.com"

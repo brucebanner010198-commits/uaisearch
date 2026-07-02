@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import time
@@ -12,6 +13,8 @@ from bs4 import BeautifulSoup
 from simhash import Simhash
 
 from uaisearch.models import ExtractedPage
+
+logger = logging.getLogger(__name__)
 
 
 class SeedManager:
@@ -174,13 +177,17 @@ async def run_crawl_cycle(
         url = seeds.next_url()
         if url is None:
             break
-        if not frontier.can_fetch(url):
+        if is_dark_web(url) or not frontier.can_fetch(url):
             continue
         domain = urlparse(url).netloc
-        frontier.wait_if_needed(domain)
+        # ponytail: one bad page must not abort the whole crawl cycle — isolate per-URL failures
         try:
+            frontier.wait_if_needed(domain)
             html = await fetch(url, client)
-        except httpx.HTTPError:
+            pages.append(build_extracted_page(html, url, domain, date.today().isoformat()))
+            for link in extract_links(html, url):
+                seeds.add_discovered(link)
+        except Exception as exc:  # untrusted markup — any page can fail extraction/fetch
+            logger.warning("skipping %s: %s", url, exc)
             continue
-        pages.append(build_extracted_page(html, url, domain, date.today().isoformat()))
     return pages
