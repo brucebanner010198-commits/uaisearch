@@ -124,3 +124,16 @@ def index_page(
         indexed += 1
     dedup_index.add(page.url, Simhash(page.simhash))
     return indexed
+
+
+def purge_blocked(client: OpenSearch, blocklist: set[str]) -> int:
+    if not blocklist:
+        return 0
+    entries = list(blocklist)
+    response = client.delete_by_query(index=INDEX_NAME, body={
+        "query": {"bool": {"should": [
+            {"terms": {"domain": entries}},
+            {"terms": {"url": entries}},
+        ]}},
+    })
+    return response["deleted"]
