@@ -13,6 +13,8 @@ dependencies = [
     "trafilatura==1.11.0",
     "boto3==1.34.144",
     "warcio==1.7.4",
+    "fastapi==0.111.0",
+    "uvicorn==0.30.1",
 ]
 
 [project.optional-dependencies]
