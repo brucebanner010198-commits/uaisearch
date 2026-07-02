@@ -10,3 +10,12 @@ def test_chat_page_serves_html_shell():
     assert "text/html" in response.headers["content-type"]
     assert 'id="chat-form"' in response.text
     assert 'id="chat-log"' in response.text
+
+
+def test_chat_js_streams_tokens_via_fetch_reader():
+    client = TestClient(app)
+    response = client.get("/static/chat.js")
+    assert response.status_code == 200
+    assert "getReader" in response.text
+    assert "conversation_id" in response.text
+    assert "askQuestion" in response.text
