@@ -44,3 +44,34 @@ def test_load_falls_back_to_default_seeds_on_corrupt_file(tmp_path):
     state.write_text("not valid json {{{")
     manager = SeedManager.load(str(state), default_seeds=["https://fallback.example/"])
     assert manager.next_url() == "https://fallback.example/"
+
+
+import time
+
+import httpx
+
+from uaisearch.crawler import Frontier
+
+
+def _frontier_with_robots(robots_txt: str) -> Frontier:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=robots_txt)
+
+    return Frontier(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_can_fetch_respects_disallow():
+    frontier = _frontier_with_robots("User-agent: *\nDisallow: /private/\n")
+    assert frontier.can_fetch("https://example.com/public/page") is True
+    assert frontier.can_fetch("https://example.com/private/page") is False
+
+
+def test_wait_if_needed_enforces_crawl_delay():
+    # urllib.robotparser silently drops non-integer delays and Frontier.crawl_delay
+    # floors at 1.0s, so a float delay passes via fallback without testing parsing.
+    # Only an integer delay above the floor proves robots.txt was honored.
+    frontier = _frontier_with_robots("User-agent: *\nCrawl-delay: 2\n")
+    frontier.wait_if_needed("example.com")
+    start = time.monotonic()
+    frontier.wait_if_needed("example.com")
+    assert time.monotonic() - start >= 2

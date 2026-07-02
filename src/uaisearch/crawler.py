@@ -1,6 +1,11 @@
 import json
 import os
+import time
+import urllib.robotparser as robotparser
 from collections import deque
+from urllib.parse import urlparse
+
+import httpx
 
 
 class SeedManager:
@@ -45,3 +50,36 @@ class SeedManager:
             except (json.JSONDecodeError, KeyError, OSError):
                 return cls(default_seeds)
         return cls(default_seeds)
+
+
+class Frontier:
+    def __init__(self, http_client: httpx.Client | None = None):
+        self._http = http_client or httpx.Client(timeout=10.0)
+        self._robots_cache: dict[str, robotparser.RobotFileParser] = {}
+        self._last_fetch: dict[str, float] = {}
+
+    def _get_robots(self, domain: str) -> robotparser.RobotFileParser:
+        if domain not in self._robots_cache:
+            rp = robotparser.RobotFileParser()
+            try:
+                resp = self._http.get(f"https://{domain}/robots.txt")
+                rp.parse(resp.text.splitlines() if resp.status_code == 200 else [])
+            except httpx.HTTPError:
+                rp.parse([])  # unreachable robots.txt -> default allow
+            self._robots_cache[domain] = rp
+        return self._robots_cache[domain]
+
+    def can_fetch(self, url: str, user_agent: str = "uaisearch-bot") -> bool:
+        domain = urlparse(url).netloc
+        return self._get_robots(domain).can_fetch(user_agent, url)
+
+    def crawl_delay(self, domain: str, user_agent: str = "uaisearch-bot") -> float:
+        delay = self._get_robots(domain).crawl_delay(user_agent)
+        return float(delay) if delay else 1.0
+
+    def wait_if_needed(self, domain: str) -> None:
+        delay = self.crawl_delay(domain)
+        elapsed = time.monotonic() - self._last_fetch.get(domain, 0.0)
+        if elapsed < delay:
+            time.sleep(delay - elapsed)
+        self._last_fetch[domain] = time.monotonic()
