@@ -1,10 +1,16 @@
+import os
 import time
 from collections import defaultdict
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Query
+from opensearchpy import OpenSearch
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from uaisearch.opensearch_client import get_client
+from uaisearch.retrieval import retrieve_and_rerank
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -54,3 +60,33 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="uaisearch")
 app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
+
+
+def _client_dependency() -> OpenSearch:
+    # ponytail: new client per request; swap for an app-lifespan-scoped
+    # singleton if connection overhead becomes measurable
+    return get_client(
+        host=os.environ.get("OPENSEARCH_HOST", "localhost"),
+        port=int(os.environ.get("OPENSEARCH_PORT", "9200")),
+    )
+
+
+@app.get("/api/v1/search")
+async def search(
+    q: str = Query(..., min_length=1, max_length=500),
+    limit: int = Query(8, ge=1, le=50),
+    include_fulltext: bool = False,
+    client: OpenSearch = Depends(_client_dependency),
+):
+    hits = await run_in_threadpool(retrieve_and_rerank, client, q, limit=limit)
+    return {
+        "query": q,
+        "results": [
+            {
+                "url": h.url, "title": h.title, "domain": h.domain,
+                "snippet": h.chunk_text[:200], "published": h.crawl_date,
+                **({"fulltext": h.chunk_text} if include_fulltext else {}),
+            }
+            for h in hits
+        ],
+    }
