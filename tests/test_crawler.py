@@ -149,3 +149,24 @@ def test_extract_clean_text_strips_ads_and_returns_title_body():
     assert "beekeeping" in body.lower()
     assert "discount beekeeping gear" not in body
     assert ad_ratio > 0.0
+
+
+from uaisearch.crawler import extract_links
+
+
+def test_extract_links_resolves_relative_hrefs():
+    html = '<a href="/about">About</a><a href="https://other.example/page">Other</a>'
+    links = extract_links(html, "https://example.com/section/")
+    assert "https://example.com/about" in links
+    assert "https://other.example/page" in links
+
+
+def test_extract_links_skips_non_http_and_dark_web_links():
+    html = (
+        '<a href="mailto:hi@example.com">Mail</a>'
+        '<a href="javascript:void(0)">JS</a>'
+        '<a href="http://exampleonionaddr.onion/page">Onion</a>'
+        '<a href="/ok">Ok</a>'
+    )
+    links = extract_links(html, "https://example.com/")
+    assert links == ["https://example.com/ok"]

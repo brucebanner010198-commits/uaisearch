@@ -4,7 +4,7 @@ import re
 import time
 import urllib.robotparser as robotparser
 from collections import deque
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import trafilatura
@@ -134,3 +134,14 @@ def extract_clean_text(html: str, url: str) -> tuple[str, str, float]:
     title = title_tag.get_text(strip=True) if title_tag else ""
     body = trafilatura.extract(str(soup), url=url) or ""
     return title, body, ad_ratio
+
+
+def extract_links(html: str, base_url: str) -> list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    links = []
+    for tag in soup.find_all("a", href=True):
+        href = urljoin(base_url, tag["href"])
+        if urlparse(href).scheme not in ("http", "https") or is_dark_web(href):
+            continue
+        links.append(href)
+    return links
