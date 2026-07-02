@@ -216,3 +216,29 @@ def test_build_extracted_page_populates_all_fields():
     assert page.ad_ratio == 0.0  # fixture HTML is ad-free
     assert page.crawl_date == "2026-07-01"
     assert isinstance(page.simhash, int)
+
+
+from datetime import date
+
+from uaisearch.crawler import run_crawl_cycle
+
+
+async def test_run_crawl_cycle_fetches_and_extracts_seed_pages():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nCrawl-delay: 0\n")
+        return httpx.Response(200, text=(
+            "<html><head><title>Seed Page</title></head>"
+            "<body><article><p>" + ("content " * 60) + "</p></article></body></html>"
+        ))
+
+    transport = httpx.MockTransport(handler)
+    seeds = SeedManager(["https://niche-example.com/a", "https://niche-example.com/b"])
+    frontier = Frontier(http_client=httpx.Client(transport=transport))
+    async with httpx.AsyncClient(transport=transport) as client:
+        pages = await run_crawl_cycle(seeds, frontier, client, max_pages=2)
+
+    assert len(pages) == 2
+    assert all(p.domain == "niche-example.com" for p in pages)
+    assert all("content" in p.text for p in pages)
+    assert all(p.crawl_date == date.today().isoformat() for p in pages)

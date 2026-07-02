@@ -158,3 +158,29 @@ def build_extracted_page(html: str, url: str, domain: str, crawl_date: str) -> E
         url=url, domain=domain, title=title, text=body,
         ad_ratio=ad_ratio, crawl_date=crawl_date, simhash=Simhash(body).value,
     )
+
+
+from datetime import date
+
+
+async def run_crawl_cycle(
+    seeds: SeedManager,
+    frontier: Frontier,
+    client: httpx.AsyncClient,
+    max_pages: int,
+) -> list[ExtractedPage]:
+    pages: list[ExtractedPage] = []
+    while len(pages) < max_pages:
+        url = seeds.next_url()
+        if url is None:
+            break
+        if not frontier.can_fetch(url):
+            continue
+        domain = urlparse(url).netloc
+        frontier.wait_if_needed(domain)
+        try:
+            html = await fetch(url, client)
+        except httpx.HTTPError:
+            continue
+        pages.append(build_extracted_page(html, url, domain, date.today().isoformat()))
+    return pages
