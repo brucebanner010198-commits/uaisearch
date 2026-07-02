@@ -86,6 +86,19 @@ def _get_llm_client() -> LLMClient:
     )
 
 
+_CONVERSATIONS: dict[str, list[tuple[str, str]]] = defaultdict(list)
+
+
+def _expand_query_with_history(conversation_id: str | None, query: str) -> str:
+    # .get() never inserts — subscripting the defaultdict here would insert the
+    # key on read and permanently defeat the eviction guard's `not in` check
+    history = _CONVERSATIONS.get(conversation_id) if conversation_id else None
+    if not history:
+        return query
+    context = "\n".join(f"Q: {q}\nA: {a}" for q, a in history[-3:])
+    return f"{context}\nQ: {query}"
+
+
 @app.get("/api/v1/search")
 async def search(
     q: str = Query(..., min_length=1, max_length=500),
@@ -113,8 +126,13 @@ async def answer(
     client: OpenSearch = Depends(_client_dependency),
     llm: LLMClient = Depends(_get_llm_client),
 ):
-    chunks = await run_in_threadpool(retrieve_and_rerank, client, query, limit=8)
-    result = await synthesize_answer(query, chunks, llm)
+    expanded_query = _expand_query_with_history(conversation_id, query)
+    chunks = await run_in_threadpool(retrieve_and_rerank, client, expanded_query, limit=8)
+    result = await synthesize_answer(expanded_query, chunks, llm)
+    if conversation_id and conversation_id not in _CONVERSATIONS and len(_CONVERSATIONS) >= 1000:
+        _CONVERSATIONS.pop(next(iter(_CONVERSATIONS)))  # ponytail: FIFO eviction; LRU if churn matters
+    if conversation_id:
+        _CONVERSATIONS[conversation_id].append((query, result.text))
 
     async def event_stream():
         for word in result.text.split(" "):

@@ -175,3 +175,35 @@ def test_answer_endpoint_defers_related_questions_until_after_answer_tokens():
     # related questions ran exactly once, and only AFTER the answer tokens
     assert mock_related.call_count == 1
     assert order == ["answer_tokens", "related"]
+
+
+def test_answer_endpoint_uses_conversation_history_for_follow_up_queries():
+    fake_chunk = Chunk(
+        url="https://a.example/1", title="A", domain="a.example",
+        chunk_text="bees need hives", embedding=[], ad_ratio=0.0,
+        domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    fake_answer = Answer(text="Bees need hives [1].", citations=[1], sources=[fake_chunk])
+    captured_queries = []
+
+    def fake_retrieve(client, query, limit=8, **kwargs):
+        captured_queries.append(query)
+        return [fake_chunk]
+
+    app.dependency_overrides[_client_dependency] = lambda: None
+    app.dependency_overrides[_get_llm_client] = lambda: None
+    try:
+        with patch("uaisearch.api.retrieve_and_rerank", side_effect=fake_retrieve), \
+             patch("uaisearch.api.synthesize_answer", return_value=fake_answer), \
+             patch("uaisearch.api.generate_related_questions", return_value=[]):
+            client = TestClient(app)
+            client.post("/api/v1/answer",
+                        params={"query": "what do bees need", "conversation_id": "conv-1"})
+            client.post("/api/v1/answer",
+                        params={"query": "how many hives", "conversation_id": "conv-1"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert "what do bees need" in captured_queries[0]
+    assert "Q: what do bees need" in captured_queries[1]
+    assert "how many hives" in captured_queries[1]
