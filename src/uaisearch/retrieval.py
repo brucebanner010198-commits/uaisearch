@@ -95,3 +95,14 @@ def rerank(query: str, candidates: list[Chunk], top_k: int = 8) -> list[Chunk]:
         chunk.score = 0.7 * cross_norm + 0.3 * prior_norm
     candidates.sort(key=lambda c: c.score, reverse=True)
     return candidates[:top_k]
+
+
+def apply_domain_cap(chunks: list[Chunk], max_per_domain: int = 2) -> list[Chunk]:
+    counts: dict[str, int] = {}
+    capped = []
+    for chunk in chunks:
+        counts.setdefault(chunk.domain, 0)
+        if counts[chunk.domain] < max_per_domain:
+            capped.append(chunk)
+            counts[chunk.domain] += 1
+    return capped

@@ -95,3 +95,38 @@ def test_rerank_blends_composite_prior_so_ad_heavy_loses_ties():
                      crawl_date="2026-07-01", score=0.2)
     result = rerank(query, [ad_heavy, clean], top_k=2)
     assert result[0].url == "clean"
+
+
+from uaisearch.retrieval import apply_domain_cap
+
+
+def _make_chunk(url, domain):
+    return Chunk(url=url, title="", domain=domain, chunk_text="", embedding=[],
+                 ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01")
+
+
+def test_apply_domain_cap_keeps_best_ranked_per_domain_in_order():
+    # Input arrives sorted best-first from rerank; the cap MUST keep the first
+    # (best-ranked) N per domain and preserve their order, not the last N.
+    chunks = [
+        _make_chunk("a.example/1", "a.example"),
+        _make_chunk("a.example/2", "a.example"),
+        _make_chunk("a.example/3", "a.example"),
+        _make_chunk("b.example/1", "b.example"),
+    ]
+    result = apply_domain_cap(chunks, max_per_domain=2)
+    assert [c.url for c in result] == ["a.example/1", "a.example/2", "b.example/1"]
+
+
+def test_apply_domain_cap_empty_input_returns_empty():
+    assert apply_domain_cap([], max_per_domain=2) == []
+
+
+def test_apply_domain_cap_returns_all_when_cap_exceeds_counts():
+    chunks = [
+        _make_chunk("a.example/1", "a.example"),
+        _make_chunk("a.example/2", "a.example"),
+        _make_chunk("b.example/1", "b.example"),
+    ]
+    result = apply_domain_cap(chunks, max_per_domain=5)
+    assert [c.url for c in result] == ["a.example/1", "a.example/2", "b.example/1"]
