@@ -58,3 +58,31 @@ INDEX_MAPPING = {
 def create_index(client: OpenSearch) -> None:
     if not client.indices.exists(index=INDEX_NAME):
         client.indices.create(index=INDEX_NAME, body=INDEX_MAPPING)
+
+
+from simhash import Simhash, SimhashIndex
+
+
+def load_simhash_index(client: OpenSearch) -> SimhashIndex:
+    # ponytail: loads every simhash into memory at once; re-load periodically
+    # or switch to a sharded index if the corpus outgrows a single process's memory
+    objs: list[tuple[str, Simhash]] = []
+    seen: set[int] = set()
+    response = client.search(
+        index=INDEX_NAME,
+        body={"query": {"match_all": {}}, "_source": ["simhash"], "size": 1000},
+        scroll="2m",
+    )
+    while response["hits"]["hits"]:
+        for hit in response["hits"]["hits"]:
+            value = hit["_source"]["simhash"]
+            if value not in seen:  # every chunk of a page shares its simhash — load once
+                seen.add(value)
+                objs.append((str(value), Simhash(value)))
+        response = client.scroll(scroll_id=response["_scroll_id"], scroll="2m")
+    client.clear_scroll(scroll_id=response["_scroll_id"])
+    return SimhashIndex(objs, k=3)
+
+
+def is_near_duplicate(index: SimhashIndex, simhash_value: int) -> bool:
+    return len(index.get_near_dups(Simhash(simhash_value))) > 0
