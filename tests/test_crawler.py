@@ -75,3 +75,19 @@ def test_wait_if_needed_enforces_crawl_delay():
     start = time.monotonic()
     frontier.wait_if_needed("example.com")
     assert time.monotonic() - start >= 2
+
+
+from uaisearch.crawler import is_dark_web
+
+
+def test_is_dark_web_rejects_onion_and_i2p_hosts():
+    assert is_dark_web("http://exampleonionaddr.onion/page") is True
+    assert is_dark_web("http://example.i2p/page") is True
+    # explicit ports must not bypass the exclusion (netloc includes :port; hostname does not)
+    assert is_dark_web("http://example.onion:8080/page") is True
+    assert is_dark_web("http://example.i2p:7657/console") is True
+    assert is_dark_web("https://ok.example:8443/") is False
+
+
+def test_is_dark_web_allows_ordinary_hosts():
+    assert is_dark_web("https://example.com/page") is False

@@ -83,3 +83,11 @@ class Frontier:
         if elapsed < delay:
             time.sleep(delay - elapsed)
         self._last_fetch[domain] = time.monotonic()
+
+
+DARK_WEB_SUFFIXES = (".onion", ".i2p")
+
+
+def is_dark_web(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    return host.lower().endswith(DARK_WEB_SUFFIXES)
