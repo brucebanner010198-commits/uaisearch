@@ -115,3 +115,37 @@ async def test_fetch_raises_on_http_error():
             assert False, "expected HTTPStatusError"
         except httpx.HTTPStatusError:
             pass
+
+
+from uaisearch.crawler import extract_clean_text, strip_ad_elements
+
+
+def test_strip_ad_elements_removes_ad_classed_tags():
+    html = '<div class="sponsored-banner">ad</div><div class="content">real content</div>'
+    soup, ad_ratio = strip_ad_elements(html)
+    assert soup.find("div", class_="sponsored-banner") is None
+    assert soup.find("div", class_="content") is not None
+    assert ad_ratio > 0.0
+
+
+def test_extract_clean_text_strips_ads_and_returns_title_body():
+    html = """
+    <html><head><title>My Niche Blog Post</title></head>
+    <body>
+        <article>
+            <h1>Backyard Beekeeping for Beginners</h1>
+            <p>Beekeeping is a rewarding hobby that supports local pollinators and
+            can even yield your own honey harvest each season. Getting started
+            requires a hive, protective gear, and a basic understanding of colony
+            behavior throughout the year. New beekeepers should start with a single
+            hive to learn the fundamentals before expanding their apiary.</p>
+        </article>
+        <div class="sponsored-banner">Buy discount beekeeping gear now!</div>
+        <iframe src="https://doubleclick.net/ad"></iframe>
+    </body></html>
+    """
+    title, body, ad_ratio = extract_clean_text(html, "https://example.com/post")
+    assert title == "My Niche Blog Post"
+    assert "beekeeping" in body.lower()
+    assert "discount beekeeping gear" not in body
+    assert ad_ratio > 0.0

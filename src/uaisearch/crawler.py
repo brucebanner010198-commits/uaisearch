@@ -1,11 +1,14 @@
 import json
 import os
+import re
 import time
 import urllib.robotparser as robotparser
 from collections import deque
 from urllib.parse import urlparse
 
 import httpx
+import trafilatura
+from bs4 import BeautifulSoup
 
 
 class SeedManager:
@@ -97,3 +100,37 @@ async def fetch(url: str, client: httpx.AsyncClient) -> str:
     response = await client.get(url, headers={"User-Agent": "uaisearch-bot/0.1"})
     response.raise_for_status()
     return response.text
+
+
+AD_PATTERNS = re.compile(r"(doubleclick|googlesyndication|sponsor(ed)?|advert)", re.I)
+
+
+def estimate_ad_density(soup: BeautifulSoup) -> float:
+    all_tags = soup.find_all(True)
+    if not all_tags:
+        return 0.0
+    ad_tags = [
+        t for t in all_tags
+        if AD_PATTERNS.search(" ".join(t.get("class", []))) or AD_PATTERNS.search(t.get("id", ""))
+    ]
+    return round(len(ad_tags) / len(all_tags), 4)
+
+
+def strip_ad_elements(html: str) -> tuple[BeautifulSoup, float]:
+    soup = BeautifulSoup(html, "lxml")
+    ad_ratio = estimate_ad_density(soup)
+    for tag in soup.find_all(True):
+        classes = " ".join(tag.get("class", []))
+        tag_id = tag.get("id", "")
+        src = tag.get("src", "") if tag.name == "iframe" else ""
+        if AD_PATTERNS.search(classes) or AD_PATTERNS.search(tag_id) or AD_PATTERNS.search(src):
+            tag.decompose()
+    return soup, ad_ratio
+
+
+def extract_clean_text(html: str, url: str) -> tuple[str, str, float]:
+    soup, ad_ratio = strip_ad_elements(html)
+    title_tag = soup.find("title")
+    title = title_tag.get_text(strip=True) if title_tag else ""
+    body = trafilatura.extract(str(soup), url=url) or ""
+    return title, body, ad_ratio
