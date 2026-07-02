@@ -3,6 +3,12 @@ body { font-family: system-ui, sans-serif; max-width: 700px; margin: 2rem auto; 
 .message.user { align-self: flex-end; background: #e6f0ff; padding: 0.5rem 1rem; border-radius: 8px; }
 .message.answer { background: #f4f4f4; padding: 0.5rem 1rem; border-radius: 8px; }
 .sources { font-size: 0.85rem; color: #555; margin-top: 0.5rem; }
-.related-questions button { margin: 0.25rem 0.25rem 0 0; }
+.related-questions { margin-top: 0.5rem; }
+.related-questions button {
+    background: none; border: 1px solid #ccc; border-radius: 999px;
+    padding: 0.3rem 0.8rem; cursor: pointer; font-size: 0.85rem;
+    margin: 0.25rem 0.25rem 0 0;
+}
+.related-questions button:hover { background: #eee; }
 #chat-form { display: flex; gap: 0.5rem; }
 #chat-input { flex: 1; padding: 0.5rem; }

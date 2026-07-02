@@ -19,3 +19,17 @@ def test_chat_js_streams_tokens_via_fetch_reader():
     assert "getReader" in response.text
     assert "conversation_id" in response.text
     assert "askQuestion" in response.text
+
+
+def test_chat_js_renders_sources_and_related_question_chips_on_final_event():
+    client = TestClient(app)
+    response = client.get("/static/chat.js")
+    assert "renderFinalEvent" in response.text
+    assert "related_questions" in response.text
+    assert "askQuestion(question)" in response.text
+
+
+def test_chat_js_handles_errors():
+    client = TestClient(app)
+    response = client.get("/static/chat.js")
+    assert "response.ok" in response.text or "catch" in response.text
