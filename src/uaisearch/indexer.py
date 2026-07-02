@@ -27,3 +27,34 @@ def _get_model() -> SentenceTransformer:
 
 def embed(text: str) -> list[float]:
     return _get_model().encode(text, normalize_embeddings=True).tolist()
+
+
+from opensearchpy import OpenSearch
+
+INDEX_NAME = "pages"
+
+INDEX_MAPPING = {
+    "settings": {"index": {"knn": True}},
+    "mappings": {
+        "properties": {
+            "url": {"type": "keyword"},
+            "domain": {"type": "keyword"},
+            "title": {"type": "text"},
+            "chunk_text": {"type": "text"},
+            "embedding": {
+                "type": "knn_vector",
+                "dimension": 384,
+                "method": {"name": "hnsw", "engine": "lucene", "space_type": "cosinesimil"},
+            },
+            "ad_ratio": {"type": "float"},
+            "domain_quality": {"type": "float"},
+            "crawl_date": {"type": "date", "format": "yyyy-MM-dd"},
+            "simhash": {"type": "long"},
+        }
+    },
+}
+
+
+def create_index(client: OpenSearch) -> None:
+    if not client.indices.exists(index=INDEX_NAME):
+        client.indices.create(index=INDEX_NAME, body=INDEX_MAPPING)
