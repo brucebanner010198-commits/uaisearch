@@ -10,3 +10,6 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .venv/
+
+# environment variables (use .env.example as template)
+.env
