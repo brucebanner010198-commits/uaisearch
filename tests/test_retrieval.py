@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from uaisearch.models import Chunk
-from uaisearch.retrieval import freshness_decay, score
+from uaisearch.retrieval import freshness_decay, score, retrieve_and_rerank
 
 
 def test_freshness_decay_is_one_for_todays_date():
@@ -130,3 +130,63 @@ def test_apply_domain_cap_returns_all_when_cap_exceeds_counts():
     ]
     result = apply_domain_cap(chunks, max_per_domain=5)
     assert [c.url for c in result] == ["a.example/1", "a.example/2", "b.example/1"]
+
+
+def test_retrieve_and_rerank_orders_relevant_chunk_first_and_respects_limit():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+
+    texts = [
+        ("https://a.example/1", "a.example", "backyard beekeeping hive management for beginners"),
+        ("https://b.example/1", "b.example", "stock market inflation report quarterly earnings"),
+        ("https://c.example/1", "c.example", "beekeeping smoker tools and honey extraction basics"),
+    ]
+    for i, (url, domain, text) in enumerate(texts):
+        client.index(index=INDEX_NAME, body={
+            "url": url, "domain": domain, "title": domain,
+            "chunk_text": text, "embedding": embed(text),
+            "ad_ratio": 0.0, "domain_quality": 1.0,
+            "crawl_date": date.today().isoformat(), "simhash": i,
+        })
+    client.indices.refresh(index=INDEX_NAME)
+
+    results = retrieve_and_rerank(client, "how do I start beekeeping", limit=2)
+    assert len(results) <= 2
+    assert results[0].domain in {"a.example", "c.example"}
+
+
+def test_retrieve_and_rerank_ranks_clean_source_above_ad_heavy_twin():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+    text = "backyard beekeeping hive management for beginners"
+    for url, domain, ad_ratio, quality, sim in [
+        ("https://clean.example/1", "clean.example", 0.0, 1.0, 1),
+        ("https://ads.example/1", "ads.example", 0.9, 0.1, 2),
+    ]:
+        client.index(index=INDEX_NAME, body={
+            "url": url, "domain": domain, "title": domain,
+            "chunk_text": text, "embedding": embed(text),
+            "ad_ratio": ad_ratio, "domain_quality": quality,
+            "crawl_date": date.today().isoformat(), "simhash": sim,
+        })
+    client.indices.refresh(index=INDEX_NAME)
+    results = retrieve_and_rerank(client, "how do I start beekeeping", limit=2)
+    assert results[0].url == "https://clean.example/1"
+
+
+def test_retrieve_and_rerank_blend_puts_clean_first_even_when_candidates_arrive_ad_heavy_first(monkeypatch):
+    text = "backyard beekeeping hive management for beginners"
+    clean = Chunk(url="https://clean.example/1", title="", domain="clean.example",
+                  chunk_text=text, embedding=[], ad_ratio=0.0, domain_quality=1.0,
+                  crawl_date=date.today().isoformat(), score=1.0)
+    ad_heavy = Chunk(url="https://ads.example/1", title="", domain="ads.example",
+                     chunk_text=text, embedding=[], ad_ratio=0.9, domain_quality=0.1,
+                     crawl_date=date.today().isoformat(), score=0.2)
+    # ad_heavy FIRST: fetch_candidates' own pre-sort is bypassed, so only rerank's
+    # blend (cross ties on identical text, prior decides) can reorder clean to the top
+    monkeypatch.setattr("uaisearch.retrieval.fetch_candidates",
+                        lambda client, query, limit: [ad_heavy, clean])
+    results = retrieve_and_rerank(object(), "how do I start beekeeping", limit=2)
+    assert results[0].url == "https://clean.example/1"

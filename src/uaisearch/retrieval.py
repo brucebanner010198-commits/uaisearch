@@ -106,3 +106,11 @@ def apply_domain_cap(chunks: list[Chunk], max_per_domain: int = 2) -> list[Chunk
             capped.append(chunk)
             counts[chunk.domain] += 1
     return capped
+
+
+def retrieve_and_rerank(
+    client: OpenSearch, query: str, limit: int = 8, candidate_pool: int = 30,
+) -> list[Chunk]:
+    candidates = fetch_candidates(client, query, limit=candidate_pool)
+    reranked = rerank(query, candidates, top_k=candidate_pool)
+    return apply_domain_cap(reranked, max_per_domain=2)[:limit]
