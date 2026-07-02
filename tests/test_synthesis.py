@@ -115,3 +115,35 @@ def test_verify_citations_keeps_supported_sentences_and_drops_unsupported():
     assert "moon landing" not in answer.text
     assert "Eiffel Tower" not in answer.text
     assert answer.citations == [1]
+
+
+async def test_synthesize_answer_returns_verified_answer():
+    from uaisearch.indexer import embed
+    from uaisearch.synthesis import synthesize_answer
+
+    source_text = "Bees communicate through a waggle dance that encodes direction and distance."
+    chunk = Chunk(
+        url="https://a.example", title="A", domain="a.example", chunk_text=source_text,
+        embedding=embed(source_text), ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # The mocked LLM emits one SUPPORTED sentence (backed by the chunk) and one
+        # UNSUPPORTED fabrication. synthesize_answer is the "no bypass" point: it MUST
+        # run verify_citations on the raw output, so the fabrication must be stripped.
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": (
+                "Bees communicate through a waggle dance that encodes direction and distance [1]. "
+                "The Eiffel Tower is in Paris."
+            ),
+        }}]})
+
+    llm = LLMClient(
+        base_url="https://api.example/v1", api_key="test", model="test-model",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    answer = await synthesize_answer("how do bees communicate", [chunk], llm)
+    assert "waggle dance" in answer.text        # supported -> kept
+    assert "Eiffel Tower" not in answer.text     # unsupported -> stripped by verify_citations
+    assert answer.citations == [1]
+    assert answer.sources == [chunk]

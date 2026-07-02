@@ -114,3 +114,8 @@ def verify_citations(raw_text: str, chunks: list[Chunk], threshold: float = 0.3)
         citations=sorted(set(citations)),
         sources=chunks,
     )
+
+
+async def synthesize_answer(query: str, chunks: list[Chunk], llm: LLMClient) -> Answer:
+    raw_text = await llm.chat(build_messages(query, chunks), temperature=0.1)
+    return verify_citations(raw_text, chunks)
