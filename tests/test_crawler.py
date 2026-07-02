@@ -91,3 +91,27 @@ def test_is_dark_web_rejects_onion_and_i2p_hosts():
 
 def test_is_dark_web_allows_ordinary_hosts():
     assert is_dark_web("https://example.com/page") is False
+
+
+from uaisearch.crawler import fetch
+
+
+async def test_fetch_returns_response_text():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html><body>hi</body></html>")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        text = await fetch("https://example.com/", client)
+    assert "hi" in text
+
+
+async def test_fetch_raises_on_http_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        try:
+            await fetch("https://example.com/missing", client)
+            assert False, "expected HTTPStatusError"
+        except httpx.HTTPStatusError:
+            pass

@@ -91,3 +91,9 @@ DARK_WEB_SUFFIXES = (".onion", ".i2p")
 def is_dark_web(url: str) -> bool:
     host = urlparse(url).hostname or ""
     return host.lower().endswith(DARK_WEB_SUFFIXES)
+
+
+async def fetch(url: str, client: httpx.AsyncClient) -> str:
+    response = await client.get(url, headers={"User-Agent": "uaisearch-bot/0.1"})
+    response.raise_for_status()
+    return response.text
