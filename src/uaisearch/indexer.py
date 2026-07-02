@@ -88,11 +88,22 @@ def is_near_duplicate(index: SimhashIndex, simhash_value: int) -> bool:
     return len(index.get_near_dups(Simhash(simhash_value))) > 0
 
 
+from urllib.parse import urlparse
+
+
+def is_blocked(url: str, blocklist: set[str]) -> bool:
+    domain = urlparse(url).netloc
+    return url in blocklist or domain in blocklist
+
+
 from uaisearch.models import ExtractedPage
 
 
-def index_page(client: OpenSearch, page: ExtractedPage, dedup_index: SimhashIndex) -> int:
-    if is_near_duplicate(dedup_index, page.simhash):
+def index_page(
+    client: OpenSearch, page: ExtractedPage, dedup_index: SimhashIndex,
+    blocklist: set[str] = frozenset(),
+) -> int:
+    if is_blocked(page.url, blocklist) or is_near_duplicate(dedup_index, page.simhash):
         return 0
     # ponytail: per-page heuristic; swap for a domain-level rolling average
     # if ad_ratio proves too noisy at the individual-page level

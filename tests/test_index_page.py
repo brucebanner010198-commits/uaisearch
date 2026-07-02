@@ -25,3 +25,39 @@ def test_index_page_indexes_chunks_and_skips_near_duplicates():
     )
     dup_count = index_page(client, duplicate_page, dedup_index)
     assert dup_count == 0
+
+
+def test_index_page_skips_blocklisted_domains():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+    dedup_index = load_simhash_index(client)
+
+    page = ExtractedPage(
+        url="https://blocked.example/post", domain="blocked.example", title="Blocked",
+        text=" ".join(f"w{i}" for i in range(500)),
+        ad_ratio=0.0, crawl_date="2026-07-01", simhash=999,
+    )
+    count = index_page(client, page, dedup_index, blocklist={"blocked.example"})
+    assert count == 0
+    client.indices.refresh(index=INDEX_NAME)
+    assert client.count(index=INDEX_NAME)["count"] == 0
+
+
+def test_index_page_skips_exact_url_blocklist_entry_and_keeps_index_empty():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+    dedup_index = load_simhash_index(client)
+
+    page = ExtractedPage(
+        url="https://mixed.example/infringing-page", domain="mixed.example", title="Infringing",
+        text=" ".join(f"w{i}" for i in range(500)),
+        ad_ratio=0.0, crawl_date="2026-07-01", simhash=555,
+    )
+    count = index_page(
+        client, page, dedup_index, blocklist={"https://mixed.example/infringing-page"},
+    )
+    assert count == 0
+    client.indices.refresh(index=INDEX_NAME)
+    assert client.count(index=INDEX_NAME)["count"] == 0
