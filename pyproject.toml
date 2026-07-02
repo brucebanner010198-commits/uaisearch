@@ -1,0 +1,24 @@
+[project]
+name = "uaisearch"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "opensearch-py==2.7.1",
+    "sentence-transformers==3.0.1",
+    "simhash==2.1.2",
+    "numpy==1.26.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
