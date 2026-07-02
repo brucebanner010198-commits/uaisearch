@@ -4,3 +4,9 @@ docs/superpowers/plans/
 # local tooling state
 .claude/
 .superpowers/
+
+# python build/test artifacts
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
