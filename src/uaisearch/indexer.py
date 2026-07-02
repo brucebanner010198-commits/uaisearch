@@ -86,3 +86,30 @@ def load_simhash_index(client: OpenSearch) -> SimhashIndex:
 
 def is_near_duplicate(index: SimhashIndex, simhash_value: int) -> bool:
     return len(index.get_near_dups(Simhash(simhash_value))) > 0
+
+
+from uaisearch.models import ExtractedPage
+
+
+def index_page(client: OpenSearch, page: ExtractedPage, dedup_index: SimhashIndex) -> int:
+    if is_near_duplicate(dedup_index, page.simhash):
+        return 0
+    # ponytail: per-page heuristic; swap for a domain-level rolling average
+    # if ad_ratio proves too noisy at the individual-page level
+    domain_quality = round(1.0 - page.ad_ratio, 4)
+    indexed = 0
+    for chunk in chunk_text(page.text):
+        client.index(index=INDEX_NAME, body={
+            "url": page.url,
+            "domain": page.domain,
+            "title": page.title,
+            "chunk_text": chunk,
+            "embedding": embed(chunk),
+            "ad_ratio": page.ad_ratio,
+            "domain_quality": domain_quality,
+            "crawl_date": page.crawl_date,
+            "simhash": page.simhash,
+        })
+        indexed += 1
+    dedup_index.add(page.url, Simhash(page.simhash))
+    return indexed
