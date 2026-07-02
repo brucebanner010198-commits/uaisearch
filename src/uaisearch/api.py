@@ -1,8 +1,10 @@
+import json
 import os
 import time
 from collections import defaultdict
 
 from fastapi import Depends, FastAPI, Query
+from fastapi.responses import StreamingResponse
 from opensearchpy import OpenSearch
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -11,6 +13,11 @@ from starlette.responses import JSONResponse
 
 from uaisearch.opensearch_client import get_client
 from uaisearch.retrieval import retrieve_and_rerank
+from uaisearch.synthesis import (
+    LLMClient,
+    generate_related_questions,
+    synthesize_answer,
+)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -71,6 +78,14 @@ def _client_dependency() -> OpenSearch:
     )
 
 
+def _get_llm_client() -> LLMClient:
+    return LLMClient(
+        base_url=os.environ["LLM_BASE_URL"],
+        api_key=os.environ.get("LLM_API_KEY", ""),
+        model=os.environ["LLM_MODEL"],
+    )
+
+
 @app.get("/api/v1/search")
 async def search(
     q: str = Query(..., min_length=1, max_length=500),
@@ -90,3 +105,28 @@ async def search(
             for h in hits
         ],
     }
+
+
+@app.post("/api/v1/answer")
+async def answer(
+    query: str, conversation_id: str | None = None,
+    client: OpenSearch = Depends(_client_dependency),
+    llm: LLMClient = Depends(_get_llm_client),
+):
+    chunks = await run_in_threadpool(retrieve_and_rerank, client, query, limit=8)
+    result = await synthesize_answer(query, chunks, llm)
+
+    async def event_stream():
+        for word in result.text.split(" "):
+            yield f"data: {json.dumps({'token': word + ' '})}\n\n"
+        # second LLM call happens after the visible answer has streamed
+        related = await generate_related_questions(query, result.text, llm)
+        final_event = {
+            "done": True,
+            "citations": result.citations,
+            "sources": [c.url for c in result.sources],
+            "related_questions": related,
+        }
+        yield f"data: {json.dumps(final_event)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

@@ -1,10 +1,11 @@
+import json
 from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from uaisearch.api import RateLimitMiddleware, _client_dependency, app
-from uaisearch.models import Chunk
+from uaisearch.api import RateLimitMiddleware, _client_dependency, _get_llm_client, app
+from uaisearch.models import Answer, Chunk
 
 
 def test_rate_limit_blocks_after_threshold_and_sets_headers():
@@ -80,3 +81,97 @@ def test_search_endpoint_returns_results_without_internal_ranking_fields():
     assert body["results"][0]["snippet"].startswith("bees need hives")
     assert "ad_ratio" not in body["results"][0]
     assert "domain_quality" not in body["results"][0]
+
+
+def _parse_sse_events(body: str) -> list[dict]:
+    return [
+        json.loads(chunk[len("data: "):])
+        for chunk in body.strip().split("\n\n")
+        if chunk.startswith("data: ")
+    ]
+
+
+def test_answer_endpoint_streams_verified_tokens_then_final_event():
+    fake_chunk = Chunk(
+        url="https://a.example/1", title="A", domain="a.example",
+        chunk_text="bees need hives", embedding=[], ad_ratio=0.0,
+        domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    fake_answer = Answer(text="Bees need hives [1].", citations=[1], sources=[fake_chunk])
+
+    app.dependency_overrides[_client_dependency] = lambda: None
+    app.dependency_overrides[_get_llm_client] = lambda: None
+    try:
+        with patch("uaisearch.api.retrieve_and_rerank", return_value=[fake_chunk]), \
+             patch("uaisearch.api.synthesize_answer", return_value=fake_answer), \
+             patch("uaisearch.api.generate_related_questions",
+                   return_value=["Why do bees need hives?"]):
+            client = TestClient(app)
+            response = client.post("/api/v1/answer", params={"query": "why hives"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    streamed_text = "".join(e["token"] for e in events if "token" in e)
+    assert streamed_text.strip() == "Bees need hives [1]."
+    final = next(e for e in events if e.get("done"))
+    assert final["citations"] == [1]
+    assert final["sources"] == ["https://a.example/1"]
+    assert final["related_questions"] == ["Why do bees need hives?"]
+    # internal ranking signals must never leak into the SSE final event
+    final_json = json.dumps(final)
+    assert "ad_ratio" not in final_json
+    assert "domain_quality" not in final_json
+
+
+def test_answer_endpoint_defers_related_questions_until_after_answer_tokens():
+    # SWOT latency fix: generate_related_questions (a second LLM round-trip) must run
+    # AFTER the answer tokens have been produced, so it never delays time-to-first-token.
+    #
+    # Output ORDER alone can't prove this: a regression that awaits related questions
+    # BEFORE the token loop still emits tokens-then-final and would pass the test above.
+    # We must assert call TIMING. starlette's TestClient buffers the whole streaming
+    # body before yielding any line, so mid-stream call_count inspection can't observe
+    # the deferral either. Instead we record the order of two server-side events into a
+    # shared list and assert the token loop ran first:
+    #   - "answer_tokens": the token loop begins iterating result.text.split(" ")
+    #   - "related": generate_related_questions is invoked
+    # Correct (deferred) code produces ["answer_tokens", "related"]; moving the
+    # related-questions call above the token loop flips the order and fails this test.
+    order: list[str] = []
+
+    class _RecordingText(str):
+        def split(self, *args, **kwargs):
+            order.append("answer_tokens")
+            return str(self).split(*args, **kwargs)
+
+    fake_chunk = Chunk(
+        url="https://a.example/1", title="A", domain="a.example",
+        chunk_text="bees need hives", embedding=[], ad_ratio=0.0,
+        domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    fake_answer = Answer(
+        text=_RecordingText("Bees need hives [1]."), citations=[1], sources=[fake_chunk],
+    )
+
+    def _record_related(*args, **kwargs):
+        order.append("related")
+        return ["Why do bees need hives?"]
+
+    app.dependency_overrides[_client_dependency] = lambda: None
+    app.dependency_overrides[_get_llm_client] = lambda: None
+    try:
+        with patch("uaisearch.api.retrieve_and_rerank", return_value=[fake_chunk]), \
+             patch("uaisearch.api.synthesize_answer", return_value=fake_answer), \
+             patch("uaisearch.api.generate_related_questions",
+                   side_effect=_record_related) as mock_related:
+            client = TestClient(app)
+            response = client.post("/api/v1/answer", params={"query": "why hives"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    # related questions ran exactly once, and only AFTER the answer tokens
+    assert mock_related.call_count == 1
+    assert order == ["answer_tokens", "related"]
