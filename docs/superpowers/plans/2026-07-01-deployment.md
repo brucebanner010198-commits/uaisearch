@@ -277,7 +277,7 @@ Expected: prints `Index ready.`; `curl -s http://localhost:9200/_cat/indices` sh
 Run (with a real Common Crawl WET segment key, e.g. from a monthly crawl's `wet.paths.gz` listing, and `TARGET_DOMAINS` set in `.env` to your seed domains): `docker compose exec app python scripts/backfill_common_crawl.py "crawl-data/CC-MAIN-.../wet/....warc.wet.gz" YYYY-MM-DD`
 Expected: prints `Backfilled N chunks from ...` with N > 0 if any target domains appear in that segment.
 
-Note: env vars now reach `docker compose exec app` because they're in the service `environment:` block (Tasks 2, 4, 6).
+Note: env vars now reach `docker compose exec app` because they're in the service `environment:` block (Task 2).
 
 Run: `docker compose exec app python scripts/purge_blocked.py`
 Expected: `Purged 0 chunks for 0 blocked entries.` with the default empty list.
@@ -341,7 +341,7 @@ async def main() -> None:
         index_page(client, page, dedup_index, blocklist=BLOCKED_DOMAINS) for page in pages
     )
     print(f"Crawled {len(pages)} pages, indexed {total_chunks} chunks.")
-    
+
     # Save after indexing — a crash mid-index re-fetches this cycle instead of losing those pages forever
     seeds.save(FRONTIER_STATE_PATH)
 
@@ -488,7 +488,7 @@ reverse_proxy app:8000
   caddy-data:
 ```
 
-Add `DOMAIN=your-real-domain.example` to `.env` (a real, publicly-resolvable domain — Caddy's automatic HTTPS via Let's Encrypt needs one; for purely local testing, skip this service and hit `app` directly on `localhost:8000`).
+Set `DOMAIN` in `.env` to your real domain (seeded by Task 2's `.env.example`) — a publicly-resolvable domain for Caddy's automatic HTTPS via Let's Encrypt; for purely local testing, skip this service and hit `app` directly on `localhost:8000`.
 
 - [ ] **Step 2: Run and verify**
 
