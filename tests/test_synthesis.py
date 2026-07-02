@@ -94,3 +94,24 @@ def test_system_prompt_treats_sources_as_untrusted_data():
     low = SYSTEM_PROMPT.lower()
     assert "untrusted" in low
     assert "instruction" in low  # must tell the model not to follow instructions inside sources
+
+
+def test_verify_citations_keeps_supported_sentences_and_drops_unsupported():
+    from uaisearch.indexer import embed
+    from uaisearch.synthesis import verify_citations
+
+    source_text = "Bees communicate through a waggle dance that encodes direction and distance."
+    chunk = Chunk(
+        url="https://a.example", title="A", domain="a.example", chunk_text=source_text,
+        embedding=embed(source_text), ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    raw_text = (
+        "Bees communicate through a waggle dance that encodes direction and distance [1]. "
+        "The moon landing happened in 1969 [1]. "
+        "The Eiffel Tower is in Paris."
+    )
+    answer = verify_citations(raw_text, [chunk])
+    assert "waggle dance" in answer.text
+    assert "moon landing" not in answer.text
+    assert "Eiffel Tower" not in answer.text
+    assert answer.citations == [1]

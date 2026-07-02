@@ -1,9 +1,12 @@
 import json
+import re
 from collections.abc import AsyncIterator
 
 import httpx
+import numpy as np
 
-from uaisearch.models import Chunk
+from uaisearch.indexer import embed
+from uaisearch.models import Answer, Chunk
 
 
 class LLMClient:
@@ -70,3 +73,44 @@ def build_messages(query: str, chunks: list[Chunk]) -> list[dict]:
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"{sources_block}\n\nQuestion: {query}"},
     ]
+
+
+CITATION_PATTERN = re.compile(r"\[(\d+)\]")
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    vec_a, vec_b = np.array(a), np.array(b)
+    denom = np.linalg.norm(vec_a) * np.linalg.norm(vec_b)
+    return float(np.dot(vec_a, vec_b) / denom) if denom else 0.0
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+
+
+def verify_citations(raw_text: str, chunks: list[Chunk], threshold: float = 0.3) -> Answer:
+    kept_sentences = []
+    citations: list[int] = []
+    for sentence in _split_sentences(raw_text):
+        cited_indices = [int(m) for m in CITATION_PATTERN.findall(sentence)]
+        if not cited_indices:
+            # A missing [n] marker is not a bypass: keep the sentence only if
+            # some retrieved chunk actually supports it
+            sentence_emb = embed(sentence)
+            if any(cosine(sentence_emb, c.embedding) >= threshold for c in chunks):
+                kept_sentences.append(sentence)
+            continue
+        supported = False
+        for cited_index in cited_indices:
+            if 1 <= cited_index <= len(chunks):
+                chunk = chunks[cited_index - 1]
+                if cosine(embed(sentence), chunk.embedding) >= threshold:
+                    supported = True
+                    citations.append(cited_index)
+        if supported:
+            kept_sentences.append(sentence)
+    return Answer(
+        text=" ".join(kept_sentences),
+        citations=sorted(set(citations)),
+        sources=chunks,
+    )
