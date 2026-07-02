@@ -2,7 +2,7 @@ from io import BytesIO
 
 from warcio.warcwriter import BufferWARCWriter
 
-from uaisearch.common_crawl import parse_wet_stream
+from uaisearch.common_crawl import build_page_from_wet, parse_wet_stream
 
 
 def _build_test_wet_stream(url: str, content: str) -> BytesIO:
@@ -42,3 +42,15 @@ def test_parse_wet_stream_normalizes_host_dropping_port_and_case():
     assert len(results) == 1
     url, domain, text = results[0]
     assert domain == "example.com"
+
+
+def test_build_page_from_wet_preserves_text_and_computes_simhash():
+    page = build_page_from_wet(
+        "https://niche-blog.example/post", "niche-blog.example",
+        "hello from a niche blog", "2026-07-01",
+    )
+    assert page.url == "https://niche-blog.example/post"
+    assert page.domain == "niche-blog.example"
+    assert page.text == "hello from a niche blog"
+    assert page.ad_ratio == 0.5
+    assert isinstance(page.simhash, int)
