@@ -198,3 +198,21 @@ def test_extract_links_skips_non_http_and_dark_web_links():
     )
     links = extract_links(html, "https://example.com/")
     assert links == ["https://example.com/ok"]
+
+
+from uaisearch.crawler import build_extracted_page
+
+
+def test_build_extracted_page_populates_all_fields():
+    html = ("<html><head><title>T</title></head><body><article><p>"
+            + ("word " * 60) + "</p></article></body></html>")
+    # URL host (www.example.com:8443) deliberately differs from the domain param:
+    # domain must be passed through verbatim, not re-derived from the URL.
+    page = build_extracted_page(html, "https://www.example.com:8443/x", "example.com", "2026-07-01")
+    assert page.url == "https://www.example.com:8443/x"
+    assert page.domain == "example.com"
+    assert page.title == "T"
+    assert "word" in page.text
+    assert page.ad_ratio == 0.0  # fixture HTML is ad-free
+    assert page.crawl_date == "2026-07-01"
+    assert isinstance(page.simhash, int)

@@ -9,6 +9,9 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import trafilatura
 from bs4 import BeautifulSoup
+from simhash import Simhash
+
+from uaisearch.models import ExtractedPage
 
 
 class SeedManager:
@@ -147,3 +150,11 @@ def extract_links(html: str, base_url: str) -> list[str]:
             continue
         links.append(href)
     return links
+
+
+def build_extracted_page(html: str, url: str, domain: str, crawl_date: str) -> ExtractedPage:
+    title, body, ad_ratio = extract_clean_text(html, url)
+    return ExtractedPage(
+        url=url, domain=domain, title=title, text=body,
+        ad_ratio=ad_ratio, crawl_date=crawl_date, simhash=Simhash(body).value,
+    )
