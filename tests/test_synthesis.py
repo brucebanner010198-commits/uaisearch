@@ -147,3 +147,33 @@ async def test_synthesize_answer_returns_verified_answer():
     assert "Eiffel Tower" not in answer.text     # unsupported -> stripped by verify_citations
     assert answer.citations == [1]
     assert answer.sources == [chunk]
+
+
+async def test_generate_related_questions_parses_numbered_list():
+    from uaisearch.synthesis import generate_related_questions
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        assert request.url.path.endswith("/chat/completions")
+        assert request.headers["Authorization"].startswith("Bearer ")
+        body = _json.loads(request.content)
+        assert body["model"] == "test-model"
+        assert isinstance(body["messages"], list) and body["messages"]
+        # Mixed numbering: "1." period style and "2)" paren style must both parse,
+        # proving the regex ^\s*\d+[.)]\s* strips either delimiter.
+        return httpx.Response(200, json={"choices": [{"message": {"content": (
+            "1. Why do bees waggle dance?\n"
+            "2) How far can bees communicate distance?\n"
+            "3. Do all bee species dance?"
+        )}}]})
+
+    llm = LLMClient(
+        base_url="https://api.example/v1", api_key="test", model="test-model",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    questions = await generate_related_questions("how do bees communicate", "they dance", llm, count=3)
+    assert questions == [
+        "Why do bees waggle dance?",
+        "How far can bees communicate distance?",
+        "Do all bee species dance?",
+    ]

@@ -119,3 +119,20 @@ def verify_citations(raw_text: str, chunks: list[Chunk], threshold: float = 0.3)
 async def synthesize_answer(query: str, chunks: list[Chunk], llm: LLMClient) -> Answer:
     raw_text = await llm.chat(build_messages(query, chunks), temperature=0.1)
     return verify_citations(raw_text, chunks)
+
+
+async def generate_related_questions(
+    query: str, answer_text: str, llm: LLMClient, count: int = 3,
+) -> list[str]:
+    prompt = (
+        f"Based on this question and answer, suggest {count} short, distinct follow-up "
+        "questions a curious reader might ask next. Return them as a plain numbered list, "
+        f"no extra commentary.\n\nQuestion: {query}\nAnswer: {answer_text}"
+    )
+    raw = await llm.chat([{"role": "user", "content": prompt}], temperature=0.3)
+    questions = []
+    for line in raw.splitlines():
+        cleaned = re.sub(r"^\s*\d+[.)]\s*", "", line).strip()
+        if cleaned:
+            questions.append(cleaned)
+    return questions[:count]
