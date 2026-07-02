@@ -1,5 +1,8 @@
 from datetime import date
 
+from opensearchpy import OpenSearch
+
+from uaisearch.indexer import INDEX_NAME, embed
 from uaisearch.models import Chunk
 
 
@@ -17,3 +20,48 @@ def score(bm25_norm: float, cosine_norm: float, chunk: Chunk) -> float:
         - 0.15 * chunk.ad_ratio
         + freshness_decay(chunk.crawl_date)
     )
+
+
+def _bm25_candidates(client: OpenSearch, query: str, size: int) -> dict[str, tuple[dict, float]]:
+    response = client.search(index=INDEX_NAME, body={
+        "size": size, "query": {"match": {"chunk_text": query}},
+    })
+    return {hit["_id"]: (hit["_source"], hit["_score"]) for hit in response["hits"]["hits"]}
+
+
+def _knn_candidates(client: OpenSearch, query_emb: list[float], size: int) -> dict[str, tuple[dict, float]]:
+    response = client.search(index=INDEX_NAME, body={
+        "size": size, "query": {"knn": {"embedding": {"vector": query_emb, "k": size}}},
+    })
+    return {hit["_id"]: (hit["_source"], hit["_score"]) for hit in response["hits"]["hits"]}
+
+
+def fetch_candidates(client: OpenSearch, query: str, limit: int = 30) -> list[Chunk]:
+    query_emb = embed(query)
+    bm25_hits = _bm25_candidates(client, query, limit)
+    knn_hits = _knn_candidates(client, query_emb, limit)
+
+    max_bm25 = max((s for _, s in bm25_hits.values()), default=1.0) or 1.0
+    max_knn = max((s for _, s in knn_hits.values()), default=1.0) or 1.0
+
+    merged: dict[str, dict] = {}
+    for doc_id, (source, raw_score) in bm25_hits.items():
+        merged.setdefault(doc_id, {"source": source, "bm25": 0.0, "knn": 0.0})
+        merged[doc_id]["bm25"] = raw_score / max_bm25
+    for doc_id, (source, raw_score) in knn_hits.items():
+        merged.setdefault(doc_id, {"source": source, "bm25": 0.0, "knn": 0.0})
+        merged[doc_id]["knn"] = raw_score / max_knn
+
+    candidates = []
+    for entry in merged.values():
+        source = entry["source"]
+        chunk = Chunk(
+            url=source["url"], title=source["title"], domain=source["domain"],
+            chunk_text=source["chunk_text"], embedding=source["embedding"],
+            ad_ratio=source["ad_ratio"], domain_quality=source["domain_quality"],
+            crawl_date=source["crawl_date"],
+        )
+        chunk.score = score(entry["bm25"], entry["knn"], chunk)
+        candidates.append(chunk)
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    return candidates

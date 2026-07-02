@@ -37,3 +37,31 @@ def test_score_ad_ratio_penalty_is_isolated_and_correctly_signed():
     ad_heavy = Chunk(url="a", title="", domain="a", chunk_text="", embedding=[],
                      ad_ratio=0.9, domain_quality=0.5, crawl_date="2026-07-01")
     assert score(0.5, 0.5, clean) > score(0.5, 0.5, ad_heavy)
+
+
+from uaisearch.indexer import INDEX_NAME, create_index, embed
+from uaisearch.opensearch_client import get_client
+from uaisearch.retrieval import fetch_candidates
+
+
+def test_fetch_candidates_ranks_relevant_chunk_above_irrelevant():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+
+    relevant_text = "backyard beekeeping hive management for beginners"
+    irrelevant_text = "stock market inflation report quarterly earnings"
+    for i, (url, domain, text) in enumerate([
+        ("https://a.example/1", "a.example", relevant_text),
+        ("https://b.example/1", "b.example", irrelevant_text),
+    ]):
+        client.index(index=INDEX_NAME, body={
+            "url": url, "domain": domain, "title": domain,
+            "chunk_text": text, "embedding": embed(text),
+            "ad_ratio": 0.0, "domain_quality": 1.0,
+            "crawl_date": date.today().isoformat(), "simhash": i,
+        })
+    client.indices.refresh(index=INDEX_NAME)
+
+    candidates = fetch_candidates(client, "how do I start beekeeping", limit=10)
+    assert candidates[0].url == "https://a.example/1"
