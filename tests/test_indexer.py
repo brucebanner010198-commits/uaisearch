@@ -40,3 +40,15 @@ def test_embed_similar_texts_have_higher_similarity_than_unrelated():
     b = np.array(embed("a cat was sitting on a mat"))
     c = np.array(embed("stock market crashes amid inflation fears"))
     assert float(np.dot(a, b)) > float(np.dot(a, c))
+
+
+def test_embed_batch_matches_single_embed_and_handles_empty():
+    from uaisearch.indexer import embed_batch
+
+    texts = ["the cat sat on the mat", "stock market crashes amid inflation fears"]
+    batched = embed_batch(texts)
+    assert len(batched) == 2
+    assert all(len(vec) == 384 for vec in batched)
+    single = embed(texts[0])
+    assert float(np.dot(np.array(single), np.array(batched[0]))) > 0.999
+    assert embed_batch([]) == []
