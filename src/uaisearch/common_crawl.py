@@ -1,16 +1,14 @@
 from collections.abc import Iterator
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
-import boto3
-from botocore import UNSIGNED
-from botocore.config import Config
 from simhash import Simhash
 from warcio.archiveiterator import ArchiveIterator
 
 from uaisearch.crawler import is_dark_web
 from uaisearch.models import ExtractedPage
 
-CC_BUCKET = "commoncrawl"
+CC_DATA_URL = "https://data.commoncrawl.org"
 
 
 def parse_wet_stream(stream, target_domains: set[str]) -> Iterator[tuple[str, str, str]]:
@@ -30,10 +28,11 @@ def parse_wet_stream(stream, target_domains: set[str]) -> Iterator[tuple[str, st
 
 
 def iter_wet_records(s3_key: str, target_domains: set[str]) -> Iterator[tuple[str, str, str]]:
-    # ponytail: Common Crawl's bucket is public/no-sign-request, hence UNSIGNED config
-    s3 = boto3.client("s3", region_name="us-east-1", config=Config(signature_version=UNSIGNED))
-    obj = s3.get_object(Bucket=CC_BUCKET, Key=s3_key)
-    yield from parse_wet_stream(obj["Body"], target_domains)
+    # Anonymous S3 GetObject on the commoncrawl bucket is denied; the supported
+    # public access path is HTTPS through data.commoncrawl.org. urlopen returns
+    # a file-like stream and ArchiveIterator gunzips it on the fly.
+    response = urlopen(f"{CC_DATA_URL}/{s3_key}")
+    yield from parse_wet_stream(response, target_domains)
 
 
 def build_page_from_wet(url: str, domain: str, text: str, crawl_date: str) -> ExtractedPage:

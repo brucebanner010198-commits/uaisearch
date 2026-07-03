@@ -4,7 +4,8 @@ import os
 import httpx
 
 from uaisearch.crawler import Frontier, SeedManager, run_crawl_cycle
-from uaisearch.indexer import create_index, index_page, load_simhash_index
+from uaisearch.indexer import INDEX_NAME, DedupIndex, create_index, index_pages
+from uaisearch.metrics import IngestStats
 from uaisearch.opensearch_client import get_client
 
 SEED_URLS = [u.strip() for u in os.environ.get("SEED_URLS", "").split(",") if u.strip()]
@@ -17,7 +18,7 @@ async def main() -> None:
         port=int(os.environ.get("OPENSEARCH_PORT", "9200")),
     )
     create_index(client)
-    dedup_index = load_simhash_index(client)
+    dedup_index = DedupIndex(client)
 
     seeds = SeedManager.load(FRONTIER_STATE_PATH, default_seeds=SEED_URLS)
     frontier = Frontier()
@@ -27,11 +28,12 @@ async def main() -> None:
             max_pages=int(os.environ.get("MAX_PAGES", "50")),
         )
 
-    total_chunks = sum(
-        index_page(client, page, dedup_index)
-        for page in pages
-    )
-    print(f"Crawled {len(pages)} pages, indexed {total_chunks} chunks.")
+    stats = IngestStats()
+    stats.chunks = index_pages(client, pages, dedup_index)
+    stats.pages = len(pages)
+    print(f"Crawled {len(pages)} pages, indexed {stats.chunks} chunks.")
+    client.indices.refresh(index=INDEX_NAME)
+    print(stats.summary(index_docs=client.count(index=INDEX_NAME)["count"]))
 
     # Save after indexing — a crash mid-index re-fetches this cycle instead of losing pages forever.
     seeds.save(FRONTIER_STATE_PATH)

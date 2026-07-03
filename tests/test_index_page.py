@@ -1,6 +1,4 @@
-from simhash import Simhash
-
-from uaisearch.indexer import INDEX_NAME, create_index, index_page, load_simhash_index
+from uaisearch.indexer import INDEX_NAME, DedupIndex, create_index, index_page
 from uaisearch.models import ExtractedPage
 from uaisearch.opensearch_client import get_client
 
@@ -9,7 +7,7 @@ def test_index_page_indexes_chunks_and_skips_near_duplicates():
     client = get_client()
     client.indices.delete(index=INDEX_NAME, ignore=[404])
     create_index(client)
-    dedup_index = load_simhash_index(client)
+    dedup_index = DedupIndex(client)
 
     page = ExtractedPage(
         url="https://example.com/first", domain="example.com", title="First",
@@ -33,7 +31,7 @@ def test_index_page_skips_dark_web_urls_as_only_content_exclusion():
     client = get_client()
     client.indices.delete(index=INDEX_NAME, ignore=[404])
     create_index(client)
-    dedup_index = load_simhash_index(client)
+    dedup_index = DedupIndex(client)
 
     page = ExtractedPage(
         url="http://abcdefonionhost.onion/page", domain="abcdefonionhost.onion", title="Hidden",
@@ -52,7 +50,7 @@ def test_index_page_accepts_unsigned_64bit_simhash_values():
     client = get_client()
     client.indices.delete(index=INDEX_NAME, ignore=[404])
     create_index(client)
-    dedup_index = load_simhash_index(client)
+    dedup_index = DedupIndex(client)
 
     page = ExtractedPage(
         url="https://big-hash.example/post", domain="big-hash.example", title="Big",
@@ -62,5 +60,6 @@ def test_index_page_accepts_unsigned_64bit_simhash_values():
     count = index_page(client, page, dedup_index)
     assert count == 2
     client.indices.refresh(index=INDEX_NAME)
-    reloaded = load_simhash_index(client)
-    assert reloaded.get_near_dups(Simhash(9448101097055934206))
+    # A fresh DedupIndex must find it through the stored corpus (bands query),
+    # proving the value round-trips through OpenSearch intact.
+    assert DedupIndex(client).is_near_duplicate(9448101097055934206) is True
