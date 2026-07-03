@@ -1,0 +1,15 @@
+# docs/: only guide/spec documents are tracked; implementation plans stay local
+docs/superpowers/plans/
+
+# local tooling state
+.claude/
+.superpowers/
+
+# python build/test artifacts
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# environment variables (use .env.example as template)
+.env
