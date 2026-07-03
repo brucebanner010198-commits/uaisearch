@@ -179,7 +179,7 @@ async def run_crawl_cycle(
             break
         if is_dark_web(url) or not frontier.can_fetch(url):
             continue
-        domain = urlparse(url).netloc
+        domain = urlparse(url).netloc.lower()
         # ponytail: one bad page must not abort the whole crawl cycle — isolate per-URL failures
         try:
             frontier.wait_if_needed(domain)

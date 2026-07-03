@@ -63,6 +63,23 @@ def test_index_page_skips_exact_url_blocklist_entry_and_keeps_index_empty():
     assert client.count(index=INDEX_NAME)["count"] == 0
 
 
+def test_index_page_skips_blocklisted_domain_regardless_of_url_case():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+    dedup_index = load_simhash_index(client)
+
+    page = ExtractedPage(
+        url="https://Blocked.Example/post", domain="blocked.example", title="Blocked",
+        text=" ".join(f"w{i}" for i in range(500)),
+        ad_ratio=0.0, crawl_date="2026-07-01", simhash=444,
+    )
+    count = index_page(client, page, dedup_index, blocklist={"blocked.example"})
+    assert count == 0
+    client.indices.refresh(index=INDEX_NAME)
+    assert client.count(index=INDEX_NAME)["count"] == 0
+
+
 def test_purge_blocked_deletes_indexed_content():
     client = get_client()
     client.indices.delete(index=INDEX_NAME, ignore=[404])

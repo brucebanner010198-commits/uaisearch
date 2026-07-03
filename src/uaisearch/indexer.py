@@ -92,7 +92,7 @@ from urllib.parse import urlparse
 
 
 def is_blocked(url: str, blocklist: set[str]) -> bool:
-    domain = urlparse(url).netloc
+    domain = urlparse(url).netloc.lower()
     return url in blocklist or domain in blocklist
 
 
