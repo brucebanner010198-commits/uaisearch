@@ -1,0 +1,192 @@
+from datetime import date, timedelta
+
+from uaisearch.models import Chunk
+from uaisearch.retrieval import freshness_decay, score, retrieve_and_rerank
+
+
+def test_freshness_decay_is_one_for_todays_date():
+    assert freshness_decay(date.today().isoformat()) == 1.0
+
+
+def test_freshness_decay_is_half_at_half_life():
+    old_date = (date.today() - timedelta(days=180)).isoformat()
+    assert abs(freshness_decay(old_date, half_life_days=180) - 0.5) < 1e-9
+
+
+def test_freshness_decay_future_date_capped_at_one():
+    future = (date.today() + timedelta(days=30)).isoformat()
+    assert freshness_decay(future) == 1.0
+
+
+def test_score_rewards_relevance_and_penalizes_ad_ratio():
+    clean_chunk = Chunk(
+        url="a", title="a", domain="a.example", chunk_text="x", embedding=[],
+        ad_ratio=0.0, domain_quality=1.0, crawl_date=date.today().isoformat(),
+    )
+    ad_heavy_chunk = Chunk(
+        url="b", title="b", domain="b.example", chunk_text="x", embedding=[],
+        ad_ratio=0.9, domain_quality=0.1, crawl_date=date.today().isoformat(),
+    )
+    assert score(0.8, 0.8, clean_chunk) > score(0.8, 0.8, ad_heavy_chunk)
+
+
+def test_score_ad_ratio_penalty_is_isolated_and_correctly_signed():
+    # identical except ad_ratio; only the ad penalty can separate them
+    clean = Chunk(url="c", title="", domain="c", chunk_text="", embedding=[],
+                  ad_ratio=0.0, domain_quality=0.5, crawl_date="2026-07-01")
+    ad_heavy = Chunk(url="a", title="", domain="a", chunk_text="", embedding=[],
+                     ad_ratio=0.9, domain_quality=0.5, crawl_date="2026-07-01")
+    assert score(0.5, 0.5, clean) > score(0.5, 0.5, ad_heavy)
+
+
+from uaisearch.indexer import INDEX_NAME, create_index, embed
+from uaisearch.opensearch_client import get_client
+from uaisearch.retrieval import fetch_candidates, rerank
+
+
+def test_fetch_candidates_ranks_relevant_chunk_above_irrelevant():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+
+    relevant_text = "backyard beekeeping hive management for beginners"
+    irrelevant_text = "stock market inflation report quarterly earnings"
+    for i, (url, domain, text) in enumerate([
+        ("https://a.example/1", "a.example", relevant_text),
+        ("https://b.example/1", "b.example", irrelevant_text),
+    ]):
+        client.index(index=INDEX_NAME, body={
+            "url": url, "domain": domain, "title": domain,
+            "chunk_text": text, "embedding": embed(text),
+            "ad_ratio": 0.0, "domain_quality": 1.0,
+            "crawl_date": date.today().isoformat(), "simhash": i,
+        })
+    client.indices.refresh(index=INDEX_NAME)
+
+    candidates = fetch_candidates(client, "how do I start beekeeping", limit=10)
+    assert candidates[0].url == "https://a.example/1"
+
+
+def test_rerank_orders_by_relevance_and_truncates():
+    query = "how do I start beekeeping"
+    relevant = Chunk(
+        url="a", title="a", domain="a.example",
+        chunk_text="backyard beekeeping hive management for beginners",
+        embedding=[], ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    irrelevant = Chunk(
+        url="b", title="b", domain="b.example",
+        chunk_text="stock market inflation report",
+        embedding=[], ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    result = rerank(query, [irrelevant, relevant], top_k=1)
+    assert len(result) == 1
+    assert result[0].url == "a"
+
+
+def test_rerank_blends_composite_prior_so_ad_heavy_loses_ties():
+    query = "how do I start beekeeping"
+    text = "backyard beekeeping hive management for beginners"
+    clean = Chunk(url="clean", title="", domain="clean.example", chunk_text=text,
+                  embedding=[], ad_ratio=0.0, domain_quality=1.0,
+                  crawl_date="2026-07-01", score=1.0)
+    ad_heavy = Chunk(url="ads", title="", domain="ads.example", chunk_text=text,
+                     embedding=[], ad_ratio=0.9, domain_quality=0.1,
+                     crawl_date="2026-07-01", score=0.2)
+    result = rerank(query, [ad_heavy, clean], top_k=2)
+    assert result[0].url == "clean"
+
+
+from uaisearch.retrieval import apply_domain_cap
+
+
+def _make_chunk(url, domain):
+    return Chunk(url=url, title="", domain=domain, chunk_text="", embedding=[],
+                 ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01")
+
+
+def test_apply_domain_cap_keeps_best_ranked_per_domain_in_order():
+    # Input arrives sorted best-first from rerank; the cap MUST keep the first
+    # (best-ranked) N per domain and preserve their order, not the last N.
+    chunks = [
+        _make_chunk("a.example/1", "a.example"),
+        _make_chunk("a.example/2", "a.example"),
+        _make_chunk("a.example/3", "a.example"),
+        _make_chunk("b.example/1", "b.example"),
+    ]
+    result = apply_domain_cap(chunks, max_per_domain=2)
+    assert [c.url for c in result] == ["a.example/1", "a.example/2", "b.example/1"]
+
+
+def test_apply_domain_cap_empty_input_returns_empty():
+    assert apply_domain_cap([], max_per_domain=2) == []
+
+
+def test_apply_domain_cap_returns_all_when_cap_exceeds_counts():
+    chunks = [
+        _make_chunk("a.example/1", "a.example"),
+        _make_chunk("a.example/2", "a.example"),
+        _make_chunk("b.example/1", "b.example"),
+    ]
+    result = apply_domain_cap(chunks, max_per_domain=5)
+    assert [c.url for c in result] == ["a.example/1", "a.example/2", "b.example/1"]
+
+
+def test_retrieve_and_rerank_orders_relevant_chunk_first_and_respects_limit():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+
+    texts = [
+        ("https://a.example/1", "a.example", "backyard beekeeping hive management for beginners"),
+        ("https://b.example/1", "b.example", "stock market inflation report quarterly earnings"),
+        ("https://c.example/1", "c.example", "beekeeping smoker tools and honey extraction basics"),
+    ]
+    for i, (url, domain, text) in enumerate(texts):
+        client.index(index=INDEX_NAME, body={
+            "url": url, "domain": domain, "title": domain,
+            "chunk_text": text, "embedding": embed(text),
+            "ad_ratio": 0.0, "domain_quality": 1.0,
+            "crawl_date": date.today().isoformat(), "simhash": i,
+        })
+    client.indices.refresh(index=INDEX_NAME)
+
+    results = retrieve_and_rerank(client, "how do I start beekeeping", limit=2)
+    assert len(results) <= 2
+    assert results[0].domain in {"a.example", "c.example"}
+
+
+def test_retrieve_and_rerank_ranks_clean_source_above_ad_heavy_twin():
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+    text = "backyard beekeeping hive management for beginners"
+    for url, domain, ad_ratio, quality, sim in [
+        ("https://clean.example/1", "clean.example", 0.0, 1.0, 1),
+        ("https://ads.example/1", "ads.example", 0.9, 0.1, 2),
+    ]:
+        client.index(index=INDEX_NAME, body={
+            "url": url, "domain": domain, "title": domain,
+            "chunk_text": text, "embedding": embed(text),
+            "ad_ratio": ad_ratio, "domain_quality": quality,
+            "crawl_date": date.today().isoformat(), "simhash": sim,
+        })
+    client.indices.refresh(index=INDEX_NAME)
+    results = retrieve_and_rerank(client, "how do I start beekeeping", limit=2)
+    assert results[0].url == "https://clean.example/1"
+
+
+def test_retrieve_and_rerank_blend_puts_clean_first_even_when_candidates_arrive_ad_heavy_first(monkeypatch):
+    text = "backyard beekeeping hive management for beginners"
+    clean = Chunk(url="https://clean.example/1", title="", domain="clean.example",
+                  chunk_text=text, embedding=[], ad_ratio=0.0, domain_quality=1.0,
+                  crawl_date=date.today().isoformat(), score=1.0)
+    ad_heavy = Chunk(url="https://ads.example/1", title="", domain="ads.example",
+                     chunk_text=text, embedding=[], ad_ratio=0.9, domain_quality=0.1,
+                     crawl_date=date.today().isoformat(), score=0.2)
+    # ad_heavy FIRST: fetch_candidates' own pre-sort is bypassed, so only rerank's
+    # blend (cross ties on identical text, prior decides) can reorder clean to the top
+    monkeypatch.setattr("uaisearch.retrieval.fetch_candidates",
+                        lambda client, query, limit: [ad_heavy, clean])
+    results = retrieve_and_rerank(object(), "how do I start beekeeping", limit=2)
+    assert results[0].url == "https://clean.example/1"

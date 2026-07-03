@@ -1,0 +1,37 @@
+[project]
+name = "uaisearch"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "opensearch-py==2.7.1",
+    "sentence-transformers==3.0.1",
+    "simhash==2.1.2",
+    "numpy==1.26.4",
+    "httpx==0.27.0",
+    "beautifulsoup4==4.12.3",
+    "lxml==5.2.2",
+    "trafilatura==1.11.0",
+    "boto3==1.34.144",
+    "warcio==1.7.4",
+    "fastapi==0.111.0",
+    "uvicorn==0.30.1",
+    "jinja2==3.1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.2",
+    "pytest-asyncio==0.23.8",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
