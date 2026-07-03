@@ -1,3 +1,5 @@
+from simhash import Simhash
+
 from uaisearch.indexer import INDEX_NAME, create_index, index_page, load_simhash_index
 from uaisearch.models import ExtractedPage
 from uaisearch.opensearch_client import get_client
@@ -42,3 +44,23 @@ def test_index_page_skips_dark_web_urls_as_only_content_exclusion():
     assert count == 0
     client.indices.refresh(index=INDEX_NAME)
     assert client.count(index=INDEX_NAME)["count"] == 0
+
+
+def test_index_page_accepts_unsigned_64bit_simhash_values():
+    # Real content routinely produces simhash values above 2**63-1; a signed
+    # "long" mapping rejects them with mapper_parsing_exception.
+    client = get_client()
+    client.indices.delete(index=INDEX_NAME, ignore=[404])
+    create_index(client)
+    dedup_index = load_simhash_index(client)
+
+    page = ExtractedPage(
+        url="https://big-hash.example/post", domain="big-hash.example", title="Big",
+        text=" ".join(f"w{i}" for i in range(500)),
+        ad_ratio=0.0, crawl_date="2026-07-01", simhash=9448101097055934206,
+    )
+    count = index_page(client, page, dedup_index)
+    assert count == 2
+    client.indices.refresh(index=INDEX_NAME)
+    reloaded = load_simhash_index(client)
+    assert reloaded.get_near_dups(Simhash(9448101097055934206))

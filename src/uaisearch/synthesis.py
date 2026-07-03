@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections.abc import AsyncIterator
 
@@ -17,7 +18,10 @@ class LLMClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
-        self._http = http_client or httpx.AsyncClient(timeout=60.0)
+        # Hosted APIs answer well inside 60s, but self-hosted models (the
+        # local-llm deployment option) may need longer for large RAG prompts.
+        timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
+        self._http = http_client or httpx.AsyncClient(timeout=timeout)
 
     async def chat(self, messages: list[dict], temperature: float = 0.2) -> str:
         response = await self._http.post(

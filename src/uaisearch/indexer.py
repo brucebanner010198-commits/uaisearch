@@ -49,7 +49,9 @@ INDEX_MAPPING = {
             "ad_ratio": {"type": "float"},
             "domain_quality": {"type": "float"},
             "crawl_date": {"type": "date", "format": "yyyy-MM-dd"},
-            "simhash": {"type": "long"},
+            # Simhash values are unsigned 64-bit; "long" is signed and rejects
+            # values above 2**63-1, which real page content produces routinely.
+            "simhash": {"type": "unsigned_long"},
         }
     },
 }
