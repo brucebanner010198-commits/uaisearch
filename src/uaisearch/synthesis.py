@@ -109,8 +109,13 @@ def verify_citations(raw_text: str, chunks: list[Chunk], threshold: float = 0.3)
                     citations.append(cited_index)
         if supported:
             kept_sentences.append(sentence)
+    text = " ".join(kept_sentences)
+    if not text:
+        # Nothing survived verification — say so instead of streaming a blank
+        # answer with dangling sources the UI would render as an empty bubble.
+        return Answer(text="not enough information", citations=[], sources=[])
     return Answer(
-        text=" ".join(kept_sentences),
+        text=text,
         citations=sorted(set(citations)),
         sources=chunks,
     )

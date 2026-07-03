@@ -88,22 +88,15 @@ def is_near_duplicate(index: SimhashIndex, simhash_value: int) -> bool:
     return len(index.get_near_dups(Simhash(simhash_value))) > 0
 
 
-from urllib.parse import urlparse
-
-
-def is_blocked(url: str, blocklist: set[str]) -> bool:
-    domain = urlparse(url).netloc.lower()
-    return url in blocklist or domain in blocklist
+from uaisearch.crawler import is_dark_web
 
 
 from uaisearch.models import ExtractedPage
 
 
-def index_page(
-    client: OpenSearch, page: ExtractedPage, dedup_index: SimhashIndex,
-    blocklist: set[str] = frozenset(),
-) -> int:
-    if is_blocked(page.url, blocklist) or is_near_duplicate(dedup_index, page.simhash):
+def index_page(client: OpenSearch, page: ExtractedPage, dedup_index: SimhashIndex) -> int:
+    # Dark web is the only content exclusion — enforced at every ingestion path.
+    if is_dark_web(page.url) or is_near_duplicate(dedup_index, page.simhash):
         return 0
     # ponytail: per-page heuristic; swap for a domain-level rolling average
     # if ad_ratio proves too noisy at the individual-page level
@@ -125,15 +118,3 @@ def index_page(
     dedup_index.add(page.url, Simhash(page.simhash))
     return indexed
 
-
-def purge_blocked(client: OpenSearch, blocklist: set[str]) -> int:
-    if not blocklist:
-        return 0
-    entries = list(blocklist)
-    response = client.delete_by_query(index=INDEX_NAME, body={
-        "query": {"bool": {"should": [
-            {"terms": {"domain": entries}},
-            {"terms": {"url": entries}},
-        ]}},
-    })
-    return response["deleted"]

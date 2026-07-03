@@ -4,7 +4,13 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from uaisearch.api import RateLimitMiddleware, _client_dependency, _get_llm_client, app
+from uaisearch.api import (
+    _CONVERSATIONS,
+    RateLimitMiddleware,
+    _client_dependency,
+    _get_llm_client,
+    app,
+)
 from uaisearch.models import Answer, Chunk
 
 
@@ -207,3 +213,118 @@ def test_answer_endpoint_uses_conversation_history_for_follow_up_queries():
     assert "what do bees need" in captured_queries[0]
     assert "Q: what do bees need" in captured_queries[1]
     assert "how many hives" in captured_queries[1]
+
+
+def test_rate_limit_ignores_unvalidated_api_key_rotation():
+    # No key issuance system exists, so rotating random X-Api-Key values must NOT
+    # mint fresh rate-limit buckets — the real (last) XFF hop buckets them together.
+    test_app = FastAPI()
+    test_app.add_middleware(RateLimitMiddleware, requests_per_minute=1)
+
+    @test_app.get("/ping")
+    async def ping():
+        return {"ok": True}
+
+    client = TestClient(test_app)
+    r1 = client.get("/ping", headers={
+        "X-Forwarded-For": "1.1.1.1, 203.0.113.9", "X-Api-Key": "key-a",
+    })
+    r2 = client.get("/ping", headers={
+        "X-Forwarded-For": "1.1.1.1, 203.0.113.9", "X-Api-Key": "key-b",
+    })
+    assert r1.status_code == 200
+    assert r2.status_code == 429
+
+
+def test_answer_endpoint_rejects_empty_and_oversized_queries():
+    app.dependency_overrides[_client_dependency] = lambda: None
+    app.dependency_overrides[_get_llm_client] = lambda: None
+    try:
+        client = TestClient(app)
+        empty = client.post("/api/v1/answer", params={"query": ""})
+        oversized = client.post("/api/v1/answer", params={"query": "x" * 501})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert empty.status_code == 422
+    assert oversized.status_code == 422
+
+
+def test_answer_endpoint_bounds_conversation_history_per_id():
+    fake_chunk = Chunk(
+        url="https://a.example/1", title="A", domain="a.example",
+        chunk_text="bees need hives", embedding=[], ad_ratio=0.0,
+        domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    fake_answer = Answer(text="Bees need hives [1].", citations=[1], sources=[fake_chunk])
+
+    _CONVERSATIONS.clear()
+    app.dependency_overrides[_client_dependency] = lambda: None
+    app.dependency_overrides[_get_llm_client] = lambda: None
+    try:
+        with patch("uaisearch.api.retrieve_and_rerank", return_value=[fake_chunk]), \
+             patch("uaisearch.api.synthesize_answer", return_value=fake_answer), \
+             patch("uaisearch.api.generate_related_questions", return_value=[]):
+            client = TestClient(app)
+            for i in range(5):
+                client.post("/api/v1/answer",
+                            params={"query": f"question {i}", "conversation_id": "conv-bound"})
+        history = list(_CONVERSATIONS["conv-bound"])
+    finally:
+        app.dependency_overrides.clear()
+        _CONVERSATIONS.clear()
+
+    assert len(history) == 3
+    assert [q for q, _ in history] == ["question 2", "question 3", "question 4"]
+
+
+def test_answer_endpoint_streams_explicit_not_enough_information_answer():
+    no_info = Answer(text="not enough information", citations=[], sources=[])
+
+    app.dependency_overrides[_client_dependency] = lambda: None
+    app.dependency_overrides[_get_llm_client] = lambda: None
+    try:
+        with patch("uaisearch.api.retrieve_and_rerank", return_value=[]), \
+             patch("uaisearch.api.synthesize_answer", return_value=no_info), \
+             patch("uaisearch.api.generate_related_questions", return_value=[]):
+            client = TestClient(app)
+            response = client.post("/api/v1/answer", params={"query": "unknown topic"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    streamed_text = "".join(e["token"] for e in events if "token" in e)
+    assert streamed_text.strip() == "not enough information"
+    final = next(e for e in events if e.get("done"))
+    assert final["sources"] == []
+
+
+def test_answer_endpoint_still_sends_final_event_when_related_questions_fail():
+    fake_chunk = Chunk(
+        url="https://a.example/1", title="A", domain="a.example",
+        chunk_text="bees need hives", embedding=[], ad_ratio=0.0,
+        domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    fake_answer = Answer(text="Bees need hives [1].", citations=[1], sources=[fake_chunk])
+
+    app.dependency_overrides[_client_dependency] = lambda: None
+    app.dependency_overrides[_get_llm_client] = lambda: None
+    try:
+        with patch("uaisearch.api.retrieve_and_rerank", return_value=[fake_chunk]), \
+             patch("uaisearch.api.synthesize_answer", return_value=fake_answer), \
+             patch("uaisearch.api.generate_related_questions",
+                   side_effect=RuntimeError("boom")):
+            client = TestClient(app)
+            response = client.post("/api/v1/answer", params={"query": "why hives"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    streamed_text = "".join(e["token"] for e in events if "token" in e)
+    assert "Bees need hives" in streamed_text
+    final = next(e for e in events if e.get("done"))
+    assert final["done"] is True
+    assert final["related_questions"] == []
+    assert final["sources"] == ["https://a.example/1"]

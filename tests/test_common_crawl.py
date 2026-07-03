@@ -30,6 +30,21 @@ def test_parse_wet_stream_skips_non_target_domains():
     assert results == []
 
 
+def test_parse_wet_stream_yields_all_clearnet_records_when_targets_empty():
+    stream = _build_test_wet_stream("https://independent.example/post", "long-tail clearnet content")
+    results = list(parse_wet_stream(stream, target_domains=set()))
+    assert len(results) == 1
+    url, domain, text = results[0]
+    assert domain == "independent.example"
+    assert "long-tail clearnet content" in text
+
+
+def test_parse_wet_stream_still_excludes_dark_web_when_targets_empty():
+    stream = _build_test_wet_stream("http://abcdefonionhost.onion/page", "dark web content")
+    results = list(parse_wet_stream(stream, target_domains=set()))
+    assert results == []
+
+
 def test_parse_wet_stream_excludes_dark_web_even_when_targeted():
     stream = _build_test_wet_stream("http://abcdefonionhost.onion/page", "dark web content")
     results = list(parse_wet_stream(stream, target_domains={"abcdefonionhost.onion"}))

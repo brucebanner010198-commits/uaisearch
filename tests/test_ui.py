@@ -33,3 +33,12 @@ def test_chat_js_handles_errors():
     client = TestClient(app)
     response = client.get("/static/chat.js")
     assert "response.ok" in response.text or "catch" in response.text
+
+
+def test_chat_js_renders_numbered_clickable_source_links_safely():
+    client = TestClient(app)
+    response = client.get("/static/chat.js")
+    assert 'createElement("a")' in response.text
+    assert "noopener noreferrer" in response.text
+    assert "textContent" in response.text
+    assert "innerHTML" not in response.text

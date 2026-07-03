@@ -7,7 +7,6 @@ from uaisearch.indexer import create_index, index_page, load_simhash_index
 from uaisearch.opensearch_client import get_client
 
 TARGET_DOMAINS = {d.strip().lower() for d in os.environ.get("TARGET_DOMAINS", "").split(",") if d.strip()}
-BLOCKED_DOMAINS = {d.strip().lower() for d in os.environ.get("BLOCKED_DOMAINS", "").split(",") if d.strip()}
 
 
 def main(s3_key: str, crawl_date: str) -> None:
@@ -21,7 +20,7 @@ def main(s3_key: str, crawl_date: str) -> None:
     total_chunks = 0
     for url, domain, text in iter_wet_records(s3_key, TARGET_DOMAINS):
         page = build_page_from_wet(url, domain, text, crawl_date=crawl_date)
-        total_chunks += index_page(client, page, dedup_index, blocklist=BLOCKED_DOMAINS)
+        total_chunks += index_page(client, page, dedup_index)
     print(f"Backfilled {total_chunks} chunks from {s3_key}.")
 
 

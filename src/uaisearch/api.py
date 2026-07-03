@@ -32,11 +32,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._windows: dict[str, tuple[int, float]] = defaultdict(lambda: (0, 0.0))
 
     async def dispatch(self, request: Request, call_next):
-        key = request.headers.get("x-api-key") or (
-            # LAST hop of X-Forwarded-For: caddy is the one trusted proxy (the app
-            # binds loopback-only) and APPENDS the real peer IP, so the rightmost
-            # value is the one caddy observed. The leftmost is client-supplied and
-            # spoofable — keying on it would let a caller rotate XFF to evade the limit.
+        # Key on the LAST hop of X-Forwarded-For or the socket peer: caddy is the
+        # one trusted proxy (the app binds loopback-only) and APPENDS the real peer
+        # IP, so the rightmost value is the one caddy observed. The leftmost is
+        # client-supplied and spoofable — keying on it would let a caller rotate
+        # XFF to evade the limit. Unvalidated X-Api-Key headers are deliberately
+        # ignored: without a key issuance system, keying on them would let anyone
+        # mint a fresh bucket per request.
+        key = (
             (request.headers.get("x-forwarded-for", "").split(",")[-1].strip() or None)
             or (request.client.host if request.client else "unknown")
         )
@@ -90,6 +93,7 @@ def _get_llm_client() -> LLMClient:
 
 
 _CONVERSATIONS: dict[str, list[tuple[str, str]]] = defaultdict(list)
+MAX_CONVERSATION_TURNS = 3
 
 
 def _expand_query_with_history(conversation_id: str | None, query: str) -> str:
@@ -98,7 +102,7 @@ def _expand_query_with_history(conversation_id: str | None, query: str) -> str:
     history = _CONVERSATIONS.get(conversation_id) if conversation_id else None
     if not history:
         return query
-    context = "\n".join(f"Q: {q}\nA: {a}" for q, a in history[-3:])
+    context = "\n".join(f"Q: {q}\nA: {a}" for q, a in history[-MAX_CONVERSATION_TURNS:])
     return f"{context}\nQ: {query}"
 
 
@@ -125,7 +129,8 @@ async def search(
 
 @app.post("/api/v1/answer")
 async def answer(
-    query: str, conversation_id: str | None = None,
+    query: str = Query(..., min_length=1, max_length=500),
+    conversation_id: str | None = Query(None, min_length=1, max_length=128),
     client: OpenSearch = Depends(_client_dependency),
     llm: LLMClient = Depends(_get_llm_client),
 ):
@@ -135,13 +140,19 @@ async def answer(
     if conversation_id and conversation_id not in _CONVERSATIONS and len(_CONVERSATIONS) >= 1000:
         _CONVERSATIONS.pop(next(iter(_CONVERSATIONS)))  # ponytail: FIFO eviction; LRU if churn matters
     if conversation_id:
-        _CONVERSATIONS[conversation_id].append((query, result.text))
+        history = _CONVERSATIONS[conversation_id]
+        history.append((query, result.text))
+        del history[:-MAX_CONVERSATION_TURNS]
 
     async def event_stream():
         for word in result.text.split(" "):
             yield f"data: {json.dumps({'token': word + ' '})}\n\n"
-        # second LLM call happens after the visible answer has streamed
-        related = await generate_related_questions(query, result.text, llm)
+        # second LLM call happens after the visible answer has streamed; its
+        # failure must not swallow the terminal event the UI depends on
+        try:
+            related = await generate_related_questions(query, result.text, llm)
+        except Exception:
+            related = []
         final_event = {
             "done": True,
             "citations": result.citations,

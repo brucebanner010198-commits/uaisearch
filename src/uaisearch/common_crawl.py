@@ -23,7 +23,7 @@ def parse_wet_stream(stream, target_domains: set[str]) -> Iterator[tuple[str, st
         if is_dark_web(url):
             continue
         domain = (urlparse(url).hostname or "").lower()
-        if domain not in target_domains:
+        if target_domains and domain not in target_domains:
             continue
         text = record.content_stream().read().decode("utf-8", errors="ignore")
         yield url, domain, text

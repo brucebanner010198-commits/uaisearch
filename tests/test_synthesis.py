@@ -117,6 +117,22 @@ def test_verify_citations_keeps_supported_sentences_and_drops_unsupported():
     assert answer.citations == [1]
 
 
+def test_verify_citations_returns_not_enough_information_when_nothing_supported():
+    from uaisearch.indexer import embed
+    from uaisearch.synthesis import verify_citations
+
+    source_text = "Bees communicate through a waggle dance that encodes direction and distance."
+    chunk = Chunk(
+        url="https://a.example", title="A", domain="a.example", chunk_text=source_text,
+        embedding=embed(source_text), ad_ratio=0.0, domain_quality=1.0, crawl_date="2026-07-01",
+    )
+    raw_text = "The moon landing happened in 1969 [1]."
+    answer = verify_citations(raw_text, [chunk])
+    assert answer.text == "not enough information"
+    assert answer.citations == []
+    assert answer.sources == []
+
+
 async def test_synthesize_answer_returns_verified_answer():
     from uaisearch.indexer import embed
     from uaisearch.synthesis import synthesize_answer

@@ -24,7 +24,18 @@ function createAnswerBubble() {
 function renderFinalEvent(bubble, event) {
     const sources = document.createElement("div");
     sources.className = "sources";
-    sources.textContent = "Sources: " + event.sources.join(", ");
+    const list = document.createElement("ol");
+    event.sources.forEach((url, i) => {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = `[${i + 1}] ${url}`;
+        item.appendChild(link);
+        list.appendChild(item);
+    });
+    sources.appendChild(list);
     bubble.appendChild(sources);
 
     const related = document.createElement("div");
