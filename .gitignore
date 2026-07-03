@@ -1,5 +1,5 @@
-# docs/: only guide/spec documents are tracked; implementation plans stay local
-docs/superpowers/plans/
+# docs/superpowers/: local Claude/superpowers working state, not project docs
+docs/superpowers/
 
 # local tooling state
 .claude/
