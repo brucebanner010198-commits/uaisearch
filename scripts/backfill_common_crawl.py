@@ -6,8 +6,8 @@ from uaisearch.common_crawl import build_page_from_wet, iter_wet_records
 from uaisearch.indexer import create_index, index_page, load_simhash_index
 from uaisearch.opensearch_client import get_client
 
-TARGET_DOMAINS = {d for d in os.environ.get("TARGET_DOMAINS", "").split(",") if d}
-BLOCKED_DOMAINS = {d for d in os.environ.get("BLOCKED_DOMAINS", "").split(",") if d}
+TARGET_DOMAINS = {d.strip().lower() for d in os.environ.get("TARGET_DOMAINS", "").split(",") if d.strip()}
+BLOCKED_DOMAINS = {d.strip().lower() for d in os.environ.get("BLOCKED_DOMAINS", "").split(",") if d.strip()}
 
 
 def main(s3_key: str, crawl_date: str) -> None:

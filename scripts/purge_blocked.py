@@ -3,7 +3,7 @@ import os
 from uaisearch.indexer import purge_blocked
 from uaisearch.opensearch_client import get_client
 
-BLOCKED_DOMAINS = {d for d in os.environ.get("BLOCKED_DOMAINS", "").split(",") if d}
+BLOCKED_DOMAINS = {d.strip().lower() for d in os.environ.get("BLOCKED_DOMAINS", "").split(",") if d.strip()}
 
 
 def main() -> None:
